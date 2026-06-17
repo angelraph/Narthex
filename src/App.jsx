@@ -66,11 +66,33 @@ export default function App() {
     const mockAddr = Keypair.random().publicKey();
     setUserWalletAddress(mockAddr);
 
-
     // Generate a random field-friendly salt
     const saltBytes = Array.from({ length: 32 }, () => Math.floor(Math.random() * 256));
     saltBytes[0] &= 0x1f; // fit within BN254 scalar field
-    setCredentialSalt('0x' + Buffer.from(saltBytes).toString('hex'));
+    const generatedSalt = '0x' + Buffer.from(saltBytes).toString('hex');
+    setCredentialSalt(generatedSalt);
+
+    // Auto-deploy/initialize contracts on load
+    try {
+      const vkMockBytes = '0x' + 'ff'.repeat(1760);
+      const issuerPubString = '0x' + Buffer.concat([iPubX, iPubY]).toString('hex');
+      
+      vm.initializeComplianceShield(
+        'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX',
+        issuerPubString,
+        vkMockBytes,
+        [1, 2, 3, 4, 5]
+      );
+
+      vm.initializeRwaToken(
+        'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX',
+        'GDSHIELD1234567890COMPLIANCEREGISTRYXXXX',
+        'Compliance Protected Realty Token',
+        'CPRT'
+      );
+    } catch (e) {
+      console.error("Auto-initialization failed:", e);
+    }
     
     refreshVmState();
   }, []);
