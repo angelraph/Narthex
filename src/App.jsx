@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import pkg from 'elliptic';
 import blake from 'blakejs';
-import { Address, Keypair } from 'stellar-sdk';
+import { Address, Keypair, Contract, rpc, scValToNative, nativeToScVal, Networks, TransactionBuilder, Account } from 'stellar-sdk';
 import { MockSorobanVM } from './mockSoroban';
 
 const { ec: EC } = pkg;
@@ -15,6 +15,18 @@ export default function App() {
   const [vmLogs, setVmLogs] = useState([]);
   const [shieldState, setShieldState] = useState(vm.shield);
   const [tokenState, setTokenState] = useState(vm.token);
+
+  // Live Testnet Bridge State
+  const [testnetContractId, setTestnetContractId] = useState('');
+  const [testnetWalletAddress, setTestnetWalletAddress] = useState('');
+  const [testnetLoading, setTestnetLoading] = useState(false);
+  const [testnetResult, setTestnetResult] = useState(null);
+
+  // Banned Countries Admin input
+  const [bannedInputString, setBannedInputString] = useState('1, 2, 3, 4, 5');
+
+  // ZK Constraints Panel Collapsible State
+  const [showZkConstraints, setShowZkConstraints] = useState(false);
 
   // Issuer State
   const [issuerKeypair, setIssuerKeypair] = useState(null);
@@ -105,6 +117,96 @@ export default function App() {
 
   const addTerminalLine = (type, text) => {
     setTerminalLines(prev => [...prev, { type, text }]);
+  };
+
+  // Admin: Update Banned Countries in Contract
+  const handleUpdateBannedCountries = () => {
+    try {
+      const parsedList = bannedInputString
+        .split(',')
+        .map(s => Number(s.trim()))
+        .filter(n => !isNaN(n));
+      
+      if (parsedList.length !== 5) {
+        addTerminalLine('error', 'Update failed: Banned list must contain exactly 5 numeric IDs.');
+        return;
+      }
+      
+      vm.updateBannedCountries(
+        'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX', // Admin caller
+        parsedList
+      );
+      
+      setBannedList(parsedList);
+      refreshVmState();
+      addTerminalLine('success', `Banned country IDs successfully updated to: [${parsedList.join(', ')}]`);
+    } catch (err) {
+      addTerminalLine('error', `Contract update failed: ${err.message}`);
+    }
+  };
+
+  // Live Testnet Bridge: Query contract
+  const handleQueryTestnet = async () => {
+    if (!testnetContractId || !testnetWalletAddress) {
+      setTestnetResult({ error: 'Please enter both Contract ID and Wallet Address.' });
+      return;
+    }
+
+    setTestnetLoading(true);
+    setTestnetResult(null);
+    const startTime = Date.now();
+
+    try {
+      const server = new rpc.Server('https://soroban-testnet.stellar.org');
+      const contract = new Contract(testnetContractId.trim());
+      const targetAddr = new Address(testnetWalletAddress.trim());
+
+      const tempKeypair = Keypair.random();
+      const account = new Account(tempKeypair.publicKey(), '0');
+
+      const tx = new TransactionBuilder(account, {
+        fee: '100',
+        networkPassphrase: Networks.TESTNET
+      })
+      .addOperation(
+        contract.call('is_wallet_eligible', nativeToScVal(targetAddr))
+      )
+      .setTimeout(30)
+      .build();
+
+      const simResponse = await server.simulateTransaction(tx);
+      const latency = Date.now() - startTime;
+
+      if (simResponse.error) {
+        setTestnetResult({
+          error: simResponse.error,
+          latency,
+          success: false
+        });
+      } else if (simResponse.result && simResponse.result.retval) {
+        const isEligible = scValToNative(simResponse.result.retval);
+        setTestnetResult({
+          eligible: isEligible,
+          latency,
+          success: true
+        });
+      } else {
+        setTestnetResult({
+          error: 'No return value from contract simulation.',
+          latency,
+          success: false
+        });
+      }
+    } catch (err) {
+      const latency = Date.now() - startTime;
+      setTestnetResult({
+        error: err.message || 'Failed to connect to Testnet RPC.',
+        latency,
+        success: false
+      });
+    } finally {
+      setTestnetLoading(false);
+    }
   };
 
   // --- ACTIONS ---
@@ -477,6 +579,32 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Dynamic Banned Country Configurator */}
+              <div className="form-group" style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid var(--border-glass)' }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>🚫</span> Update Banned Countries on Registry (Admin)
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input 
+                    type="text" 
+                    className="form-input form-input-mono" 
+                    style={{ flex: 1 }}
+                    value={bannedInputString} 
+                    onChange={(e) => setBannedInputString(e.target.value)} 
+                  />
+                  <button 
+                    className="btn btn-secondary" 
+                    style={{ fontSize: '13px', whiteSpace: 'nowrap' }}
+                    onClick={handleUpdateBannedCountries}
+                  >
+                    Update Shield
+                  </button>
+                </div>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', display: 'block', marginTop: '4px' }}>
+                  Enter exactly 5 comma-separated numeric IDs. Admin signature will authenticate this on-chain call.
+                </span>
+              </div>
             </div>
           )}
 
@@ -548,6 +676,50 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* ZK Circuit Constraints Visualizer */}
+              <div style={{ marginTop: '24px', paddingTop: '16px', borderTop: '1px solid var(--border-glass)' }}>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ width: '100%', justifyContent: 'space-between', padding: '10px 14px', fontSize: '13px' }}
+                  onClick={() => setShowZkConstraints(!showZkConstraints)}
+                >
+                  <span>📊 {showZkConstraints ? 'Hide' : 'Show'} ZK Circuit Constraints Math</span>
+                  <span>{showZkConstraints ? '▲' : '▼'}</span>
+                </button>
+                
+                {showZkConstraints && (
+                  <div style={{ marginTop: '12px', padding: '16px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-glass)', fontSize: '12px', lineHeight: '1.6' }}>
+                    <h4 style={{ color: 'var(--neon-cyan)', marginBottom: '8px', fontWeight: '600' }}>Verified Constraints (Noir Circuits):</h4>
+                    <ul style={{ listStyleType: 'disc', paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '8px', color: 'var(--color-text-secondary)' }}>
+                      <li>
+                        <strong style={{ color: 'var(--color-text-primary)' }}>Ownership Verification:</strong>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', marginTop: '2px', background: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '4px' }}>
+                          verify_signature(user_pubkey, user_sig, blake2s(target_wallet)) == true
+                        </div>
+                      </li>
+                      <li>
+                        <strong style={{ color: 'var(--color-text-primary)' }}>Issuer Credential Authenticity:</strong>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', marginTop: '2px', background: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '4px' }}>
+                          verify_signature(issuer_pubkey, issuer_sig, blake2s(cred_payload)) == true
+                        </div>
+                      </li>
+                      <li>
+                        <strong style={{ color: 'var(--color-text-primary)' }}>Exclusion Check:</strong>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', marginTop: '2px', background: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '4px' }}>
+                          for each banned in banned_countries: assert(country_code != banned)
+                        </div>
+                      </li>
+                      <li>
+                        <strong style={{ color: 'var(--color-text-primary)' }}>Unique Nullifier:</strong>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', marginTop: '2px', background: 'rgba(0,0,0,0.2)', padding: '4px 8px', borderRadius: '4px' }}>
+                          nullifier = blake2s(user_pubkey_x, user_pubkey_y, salt)
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -627,6 +799,73 @@ export default function App() {
                     {userWalletAddress.substring(0, 8)}...
                   </span>
                 </div>
+              </div>
+
+              {/* Live Testnet Bridge Component */}
+              <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid var(--border-glass)' }}>
+                <h4 style={{ fontSize: '14px', fontWeight: '700', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>🌐</span> Live Stellar Testnet Bridge
+                </h4>
+                <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginBottom: '16px' }}>
+                  Query real deployed contracts directly on the Stellar Testnet blockchain. 
+                </p>
+
+                <div className="form-group">
+                  <label className="form-label">ComplianceShield Contract ID (Testnet)</label>
+                  <input 
+                    type="text" 
+                    className="form-input form-input-mono" 
+                    placeholder="CC..." 
+                    value={testnetContractId}
+                    onChange={(e) => setTestnetContractId(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Query Wallet Address</label>
+                  <input 
+                    type="text" 
+                    className="form-input form-input-mono" 
+                    placeholder="G..." 
+                    value={testnetWalletAddress}
+                    onChange={(e) => setTestnetWalletAddress(e.target.value)}
+                  />
+                </div>
+
+                <button 
+                  className="btn btn-primary" 
+                  style={{ width: '100%' }} 
+                  onClick={handleQueryTestnet}
+                  disabled={testnetLoading}
+                >
+                  {testnetLoading ? '📡 Querying Testnet RPC...' : '🔍 Query Blockchain State'}
+                </button>
+
+                {testnetResult && (
+                  <div style={{ marginTop: '16px', padding: '12px', borderRadius: '8px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-glass)' }}>
+                    {testnetResult.success ? (
+                      <div>
+                        <div className="flex-between">
+                          <span className="form-label" style={{ margin: 0 }}>RPC Latency</span>
+                          <span style={{ fontSize: '11px', color: 'var(--neon-cyan)', fontFamily: 'var(--font-mono)' }}>{testnetResult.latency} ms</span>
+                        </div>
+                        <div style={{ marginTop: '8px' }}>
+                          <span style={{ fontSize: '13px', display: 'block', color: 'var(--color-text-secondary)' }}>Blockchain Status:</span>
+                          <span style={{ fontSize: '15px', fontWeight: 'bold', display: 'block', marginTop: '4px' }} className={testnetResult.eligible ? "glow-text-emerald" : "glow-text-rose"}>
+                            {testnetResult.eligible ? '🟢 ELIGIBLE (Wallet registered)' : '🔴 NON-COMPLIANT (Not registered)'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="glow-text-rose" style={{ fontSize: '13px', fontWeight: 'bold', display: 'block' }}>Query Failed</span>
+                        <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginTop: '4px', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+                          {typeof testnetResult.error === 'object' ? JSON.stringify(testnetResult.error) : testnetResult.error}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
