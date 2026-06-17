@@ -4,6 +4,9 @@
   "description": "ZK-SEP-57 Compliance Shield on Soroban",
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "prove": "node scripts/prove.js"
   },
   "dependencies": {
@@ -14,6 +17,14 @@
     "blakejs": "^1.2.1",
     "elliptic": "^6.6.1",
     "isomorphic-git": "^1.38.4",
-    "stellar-sdk": "^12.3.0"
+    "stellar-sdk": "^12.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.1"
   }
 }
