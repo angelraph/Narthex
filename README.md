@@ -106,15 +106,28 @@ The project consists of two core Soroban smart contracts:
    ```
 
 ### Compile and Build
-* **Compile ZK Circuits**:
-  ```bash
-  npm run compile
-  ```
-* **Build Soroban Contracts**:
-  ```bash
-  cd contracts
-  cargo build --target wasm32-unknown-unknown --release
-  ```
+1. **Compile ZK Circuits**:
+   ```bash
+   npm run compile
+   ```
+2. **Build Soroban Contracts**:
+   ```bash
+   cd contracts
+   cargo build --target wasm32-unknown-unknown --release
+   ```
+
+### Deploy to Testnet
+You can deploy the compiled contracts directly to the Stellar Testnet:
+```bash
+node scripts/deploy.js
+```
+> [!TIP]
+> **Zero Configuration:** If no `STELLAR_SECRET_KEY` is provided, the script will automatically generate a new keypair, fund it via the Friendbot faucet, and deploy the contracts using the funded account!
+
+---
+
+## 📹 Hackathon Demo Video Script
+For recording your submission walkthrough, refer to the complete presenter script and timeline outline in [video_script.md](file:///c:/Users/Admin/Desktop/Narthex/video_script.md).
 
 ---
 
@@ -126,3 +139,4 @@ Features of the dashboard:
 1. **Issuer Portal**: Automatically generates mock keypairs and signs credentials for test users.
 2. **User Portal**: Renders a live ZK-Prover terminal showing step-by-step constraint verification and computes the actual Blake2s wallet hash.
 3. **Asset Ledger**: Simulates the RWA token transfer ledger, demonstrating that non-eligible wallets are blocked dynamically by the compliance shield.
+
