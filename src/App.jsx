@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import pkg from 'elliptic';
 import blake from 'blakejs';
-import { Address } from 'stellar-sdk';
+import { Address, Keypair } from 'stellar-sdk';
 import { MockSorobanVM } from './mockSoroban';
 
 const { ec: EC } = pkg;
@@ -62,14 +62,10 @@ export default function App() {
     const iPubY = iKey.getPublic().getY().toArrayLike(Buffer, 'be', 32);
     setIssuerPubHex('0x' + Buffer.concat([iPubX, iPubY]).toString('hex'));
 
-    // Generate random mock Stellar Address
-    // We generate a valid-looking G... public key for mock verification
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let mockAddr = 'G';
-    for (let i = 0; i < 55; i++) {
-      mockAddr += alphabet[Math.floor(Math.random() * alphabet.length)];
-    }
+    // Generate valid mock Stellar Address with correct checksum
+    const mockAddr = Keypair.random().publicKey();
     setUserWalletAddress(mockAddr);
+
 
     // Generate a random field-friendly salt
     const saltBytes = Array.from({ length: 32 }, () => Math.floor(Math.random() * 256));

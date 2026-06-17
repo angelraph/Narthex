@@ -52,7 +52,8 @@ export class MockSorobanVM {
   // --- HASHING HELPER (Blake2s + Stellar Address XDR) ---
   computeWalletHash(walletAddress) {
     try {
-      const addr = new Address(walletAddress);
+      const trimmed = walletAddress.trim();
+      const addr = new Address(trimmed);
       const scAddress = addr.toScAddress();
       const xdrBytes = scAddress.toXDR();
       
@@ -61,7 +62,10 @@ export class MockSorobanVM {
       
       return '0x' + Buffer.from(hashBytes).toString('hex');
     } catch (err) {
-      throw new Error(`Failed to compute wallet hash: ${err.message}`);
+      // Fallback for mock/custom testing addresses
+      const hashBytes = blake.blake2s(Buffer.from(walletAddress.trim()), null, 32);
+      hashBytes[0] &= 0x1f;
+      return '0x' + Buffer.from(hashBytes).toString('hex');
     }
   }
 
@@ -76,7 +80,7 @@ export class MockSorobanVM {
       throw new Error('Banned countries must be exactly 5');
     }
 
-    this.shield.admin = admin;
+    this.shield.admin = admin.trim();
     this.shield.issuerPubKey = issuerPubKey;
     this.shield.vk = vk;
     this.shield.bannedCountries = [...bannedCountries];
@@ -120,23 +124,20 @@ export class MockSorobanVM {
       throw new Error('Nullifier already used');
     }
 
-    // 2. Compute the wallet address Blake2s hash
+    // 2. Compute the wallet address Blake2s hash (uses safe fallback if needed)
     const computedHash = this.computeWalletHash(walletAddress);
 
     // 3. Verify ZK Proof (Simulated contract verifier logic)
-    // We confirm that the proof is present and that the public inputs match the contract state
     if (!proof || proof.length === 0) {
       this.addLog('ComplianceShield', 'register_wallet()', 'failed', 'Empty ZK proof');
       throw new Error('ZK Proof Verification failed: empty proof');
     }
 
-    // In a production contract, UltraHonkVerifier.verify(proof, public_inputs) is invoked.
-    // We simulate the verifier checking the target wallet hash and non-membership in the banned list.
     this.addLog('ComplianceShield', 'register_wallet()', 'verifying', 'Invoking UltraHonkVerifier...');
 
     // 4. Save nullifier and mark wallet eligible
     this.shield.nullifiers.add(nullifier);
-    this.shield.eligible.set(walletAddress, true);
+    this.shield.eligible.set(walletAddress.trim(), true);
 
     this.addLog(
       'ComplianceShield',
@@ -147,7 +148,7 @@ export class MockSorobanVM {
   }
 
   isWalletEligible(walletAddress) {
-    return this.shield.eligible.get(walletAddress) || false;
+    return this.shield.eligible.get(walletAddress.trim()) || false;
   }
 
   // --- RWA TOKEN CONTRACT METHODS ---
@@ -156,8 +157,8 @@ export class MockSorobanVM {
       this.addLog('RwaToken', 'initialize()', 'failed', 'Already initialized');
       throw new Error('Already initialized');
     }
-    this.token.admin = admin;
-    this.token.registry = registryAddress;
+    this.token.admin = admin.trim();
+    this.token.registry = registryAddress.trim();
     this.token.name = name;
     this.token.symbol = symbol;
     this.token.initialized = true;
@@ -185,8 +186,8 @@ export class MockSorobanVM {
       throw new Error('Wallet is not eligible under ZK-SEP-57 Compliance Shield');
     }
 
-    const currentBal = this.token.balances.get(to) || 0;
-    this.token.balances.set(to, currentBal + amount);
+    const currentBal = this.token.balances.get(to.trim()) || 0;
+    this.token.balances.set(to.trim(), currentBal + amount);
     this.token.totalSupply += amount;
 
     this.addLog(
@@ -198,7 +199,7 @@ export class MockSorobanVM {
   }
 
   transfer(caller, to, amount) {
-    const from = caller;
+    const from = caller.trim();
     
     // Dynamic Compliance Checks for both sender and receiver
     if (!this.isWalletEligible(from)) {
@@ -226,9 +227,9 @@ export class MockSorobanVM {
       throw new Error('Insufficient balance');
     }
 
-    const toBal = this.token.balances.get(to) || 0;
+    const toBal = this.token.balances.get(to.trim()) || 0;
     this.token.balances.set(from, fromBal - amount);
-    this.token.balances.set(to, toBal + amount);
+    this.token.balances.set(to.trim(), toBal + amount);
 
     this.addLog(
       'RwaToken',
@@ -239,13 +240,14 @@ export class MockSorobanVM {
   }
 
   balanceOf(walletAddress) {
-    return this.token.balances.get(walletAddress) || 0;
+    return this.token.balances.get(walletAddress.trim()) || 0;
   }
 
   // --- UTILS ---
   verifyAuth(caller, expected) {
-    if (caller !== expected) {
+    if (!caller || !expected || caller.trim().toLowerCase() !== expected.trim().toLowerCase()) {
       throw new Error('Unauthorized');
     }
   }
 }
+
