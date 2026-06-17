@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ultrahonk-soroban-verifier",
+    "crates/test-utils",
+    "contracts/rs-soroban-ultrahonk",
+    "contracts/tornado_classic/contracts",
+    "contracts/identity"
+]
+
+[workspace.dependencies]
+soroban-sdk = { version = "26.0.1", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

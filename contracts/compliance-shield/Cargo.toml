@@ -1,0 +1,15 @@
+[package]
+name = "compliance-shield"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+ultrahonk_soroban_verifier = { path = "../rs-soroban-ultrahonk/crates/ultrahonk-soroban-verifier" }
+blake2 = { version = "0.10.6", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

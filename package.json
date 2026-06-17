@@ -1,0 +1,19 @@
+{
+  "name": "compliance-shield",
+  "version": "1.0.0",
+  "description": "ZK-SEP-57 Compliance Shield on Soroban",
+  "type": "module",
+  "scripts": {
+    "prove": "node scripts/prove.js"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "^4.3.1",
+    "@noir-lang/backend_barretenberg": "0.36.0",
+    "@noir-lang/noir_js": "1.0.0-beta.22",
+    "@noir-lang/noir_wasm": "1.0.0-beta.22",
+    "blakejs": "^1.2.1",
+    "elliptic": "^6.6.1",
+    "isomorphic-git": "^1.38.4",
+    "stellar-sdk": "^12.3.0"
+  }
+}

@@ -1,0 +1,7 @@
+[package]
+name = "compliance_shield"
+type = "bin"
+authors = ["Antigravity"]
+compiler_version = ">=0.30.0"
+
+[dependencies]
