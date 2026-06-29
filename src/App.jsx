@@ -22,8 +22,8 @@ export default function App() {
   const [isTestnetMode, setIsTestnetMode] = useState(false);
   const [freighterConnected, setFreighterConnected] = useState(false);
   const [freighterAddress, setFreighterAddress] = useState('');
-  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || '');
-  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || '');
+  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCRNB3Z7DGM3OBY6BHP5W3XXKQGSBJ3ENDJRYSKZFQUV4F4EPHDDSGQ7');
+  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CBOSM4KLCL4P2EKJ4FYLA5JXPBUGQWTFEFT7JSRONIGU45AE3KURLLGR');
   const [testnetLoading, setTestnetLoading] = useState(false);
   const [onchainBalance, setOnchainBalance] = useState('0');
 
