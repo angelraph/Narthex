@@ -135,16 +135,44 @@ export default function App() {
   };
 
   // --- FREIGHTER CONNECTION ---
-  const isFreighterInstalled = () => typeof window !== 'undefined' && !!window.stellar;
+  const getFreighterProvider = () => {
+    if (typeof window === 'undefined') return null;
+    return window.stellar || window.freighter || window.stellarPubKey;
+  };
+
+  const isFreighterInstalled = () => {
+    return !!getFreighterProvider();
+  };
 
   const connectFreighter = async () => {
-    if (!isFreighterInstalled()) {
-      addTerminalLine('error', 'Freighter extension not found. Please install the browser extension.');
+    addTerminalLine('info', 'Searching for Freighter wallet extension...');
+    
+    // Retry detection over 1 second for async injection
+    let provider = null;
+    for (let i = 0; i < 10; i++) {
+      provider = getFreighterProvider();
+      if (provider) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    if (!provider) {
+      addTerminalLine('error', 'Freighter extension not detected in browser window.');
+      // Print window providers for debugging
+      const windowKeys = typeof window !== 'undefined' ? Object.keys(window) : [];
+      const walletKeys = windowKeys.filter(k => 
+        k.toLowerCase().includes('stellar') || 
+        k.toLowerCase().includes('freighter') || 
+        k.toLowerCase().includes('wallet') ||
+        k.toLowerCase().includes('albedo')
+      );
+      addTerminalLine('info', `Detected window objects: [${walletKeys.join(', ') || 'none'}]`);
+      addTerminalLine('warning', 'If installed, please reload the page, ensure Freighter is active, or allow it permission to run on this site.');
       return;
     }
+    
     try {
       setTestnetLoading(true);
-      const pubKey = await window.stellar.getPublicKey();
+      const pubKey = await provider.getPublicKey();
       setFreighterAddress(pubKey);
       setFreighterConnected(true);
       setUserWalletAddress(pubKey);
@@ -158,12 +186,13 @@ export default function App() {
 
   // --- ON-CHAIN TRANSACTIONS HANDLER ---
   const executeSorobanTransaction = async (contractId, functionName, scArgs) => {
-    if (!isFreighterInstalled()) {
-      throw new Error("Freighter wallet not installed.");
+    const provider = getFreighterProvider();
+    if (!provider) {
+      throw new Error("Freighter wallet not detected.");
     }
     const server = new rpc.Server('https://soroban-testnet.stellar.org');
     
-    const activeAddress = freighterAddress || await window.stellar.getPublicKey();
+    const activeAddress = freighterAddress || await provider.getPublicKey();
     if (!activeAddress) {
       throw new Error("Freighter wallet not connected.");
     }
@@ -185,7 +214,7 @@ export default function App() {
     tx = await server.prepareTransaction(tx);
     
     addTerminalLine('info', 'Prompting signature from Freighter extension...');
-    const signedXdr = await window.stellar.signTransaction(tx.toXDR(), {
+    const signedXdr = await provider.signTransaction(tx.toXDR(), {
       network: 'TESTNET'
     });
     
