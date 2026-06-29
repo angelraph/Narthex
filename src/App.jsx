@@ -4,6 +4,7 @@ import blake from 'blakejs';
 import { Address, Keypair, Contract, rpc, scValToNative, nativeToScVal, Networks, TransactionBuilder, Account } from 'stellar-sdk';
 import { MockSorobanVM } from './mockSoroban';
 import logoImg from './narthex_logo.png';
+import { connectWallet, getWalletAddress, signXdr, isWalletInstalled } from './wallet/freighter';
 
 const { ec: EC } = pkg;
 const ec = new EC('secp256k1');
@@ -142,50 +143,25 @@ export default function App() {
   };
 
   // --- FREIGHTER CONNECTION ---
-  const getFreighterProvider = () => {
-    if (typeof window === 'undefined') return null;
-    return window.stellar || window.freighter || window.stellarPubKey;
-  };
-
-  const isFreighterInstalled = () => {
-    return !!getFreighterProvider();
-  };
-
   const connectFreighter = async () => {
     addTerminalLine('info', 'Searching for Freighter wallet extension...');
     
-    // Retry detection over 1 second for async injection
-    let provider = null;
-    for (let i = 0; i < 10; i++) {
-      provider = getFreighterProvider();
-      if (provider) break;
-      await new Promise(r => setTimeout(r, 100));
-    }
-
-    if (!provider) {
-      addTerminalLine('error', 'Freighter extension not detected in browser window.');
-      // Print window providers for debugging
-      const windowKeys = typeof window !== 'undefined' ? Object.keys(window) : [];
-      const walletKeys = windowKeys.filter(k => 
-        k.toLowerCase().includes('stellar') || 
-        k.toLowerCase().includes('freighter') || 
-        k.toLowerCase().includes('wallet') ||
-        k.toLowerCase().includes('albedo')
-      );
-      addTerminalLine('info', `Detected window objects: [${walletKeys.join(', ') || 'none'}]`);
-      addTerminalLine('warning', 'If installed, please reload the page, ensure Freighter is active, or allow it permission to run on this site.');
-      return;
-    }
-    
     try {
+      const installed = await isWalletInstalled();
+      if (!installed) {
+        addTerminalLine('error', 'Freighter extension not detected.');
+        addTerminalLine('warning', 'Please ensure the Freighter extension is active or allow it permission to run on this site.');
+        return;
+      }
+
       setTestnetLoading(true);
-      const pubKey = await provider.getPublicKey();
-      setFreighterAddress(pubKey);
+      const address = await connectWallet();
+      setFreighterAddress(address);
       setFreighterConnected(true);
-      setUserWalletAddress(pubKey);
-      addTerminalLine('success', `Freighter Connected! Address: ${pubKey}`);
+      setUserWalletAddress(address);
+      addTerminalLine('success', `Freighter Connected! Address: ${address}`);
     } catch (e) {
-      addTerminalLine('error', `Connection failed: ${e.message}`);
+      addTerminalLine('error', `Connection failed: ${e.message || e}`);
     } finally {
       setTestnetLoading(false);
     }
@@ -193,11 +169,25 @@ export default function App() {
 
   // --- ON-CHAIN TRANSACTIONS HANDLER ---
   const executeSorobanTransaction = async (contractId, functionName, scArgs) => {
-    const provider = getFreighterProvider();
-    const useManual = isManualWalletMode || !provider;
+    const installed = await isWalletInstalled();
+    const useManual = isManualWalletMode || !installed;
     
     const server = new rpc.Server('https://soroban-testnet.stellar.org');
-    const activeAddress = isManualWalletMode ? manualAddressInput : (freighterAddress || (provider ? await provider.getPublicKey() : ''));
+    
+    let activeAddress = '';
+    if (isManualWalletMode) {
+      activeAddress = manualAddressInput;
+    } else {
+      try {
+        activeAddress = freighterAddress || await getWalletAddress();
+      } catch (e) {
+        if (!installed) {
+          addTerminalLine('warning', 'Freighter not detected. Falling back to Manual mode.');
+        } else {
+          addTerminalLine('error', `Could not retrieve wallet address: ${e.message || e}`);
+        }
+      }
+    }
     
     if (!activeAddress) {
       throw new Error("No active wallet address. Please connect Freighter or toggle Manual Wallet Input.");
@@ -228,9 +218,13 @@ export default function App() {
     }
     
     addTerminalLine('info', 'Prompting signature from Freighter extension...');
-    const signedXdr = await provider.signTransaction(txXdr, {
-      network: 'TESTNET'
-    });
+    let signedXdr;
+    try {
+      signedXdr = await signXdr(txXdr, Networks.TESTNET);
+    } catch (e) {
+      addTerminalLine('error', `Signing failed: ${e.message || e}`);
+      throw e;
+    }
     
     const signedTx = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
     
