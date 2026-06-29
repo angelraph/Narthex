@@ -793,8 +793,22 @@ export default function App() {
         </div>
         <div>
           <span className="form-label">Active Wallet Address</span>
-          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}>
-            {isTestnetMode ? (freighterAddress || 'Freighter Not Connected') : (userWalletAddress || 'Not Loaded')}
+          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)', wordBreak: 'break-all', display: 'block' }}>
+            {isTestnetMode ? (
+              freighterConnected ? (
+                <span className="glow-text-emerald" style={{ wordBreak: 'break-all' }}>🟢 {freighterAddress}</span>
+              ) : (
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ padding: '6px 12px', fontSize: '11px', height: 'auto', display: 'inline-flex', marginTop: '4px', width: '100%', justifyContent: 'center' }}
+                  onClick={connectFreighter}
+                >
+                  🔌 Connect Freighter
+                </button>
+              )
+            ) : (
+              userWalletAddress || 'Not Loaded'
+            )}
           </span>
         </div>
       </div>
