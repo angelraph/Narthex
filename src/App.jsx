@@ -26,6 +26,13 @@ export default function App() {
   const [testnetLoading, setTestnetLoading] = useState(false);
   const [onchainBalance, setOnchainBalance] = useState('0');
 
+  // Manual sign / sandbox fallback states
+  const [isManualWalletMode, setIsManualWalletMode] = useState(false);
+  const [manualAddressInput, setManualAddressInput] = useState('');
+  const [pendingTxXdr, setPendingTxXdr] = useState('');
+  const [signedXdrInput, setSignedXdrInput] = useState('');
+  const [showXdrModal, setShowXdrModal] = useState(false);
+
   // Banned Countries Admin input
   const [bannedInputString, setBannedInputString] = useState('1, 2, 3, 4, 5');
 
@@ -187,19 +194,18 @@ export default function App() {
   // --- ON-CHAIN TRANSACTIONS HANDLER ---
   const executeSorobanTransaction = async (contractId, functionName, scArgs) => {
     const provider = getFreighterProvider();
-    if (!provider) {
-      throw new Error("Freighter wallet not detected.");
-    }
-    const server = new rpc.Server('https://soroban-testnet.stellar.org');
+    const useManual = isManualWalletMode || !provider;
     
-    const activeAddress = freighterAddress || await provider.getPublicKey();
+    const server = new rpc.Server('https://soroban-testnet.stellar.org');
+    const activeAddress = isManualWalletMode ? manualAddressInput : (freighterAddress || (provider ? await provider.getPublicKey() : ''));
+    
     if (!activeAddress) {
-      throw new Error("Freighter wallet not connected.");
+      throw new Error("No active wallet address. Please connect Freighter or toggle Manual Wallet Input.");
     }
     
     addTerminalLine('info', `Building real on-chain transaction for '${functionName}'...`);
     
-    const account = await server.getAccount(activeAddress);
+    const account = await server.getAccount(activeAddress.trim());
     const contract = new Contract(contractId.trim());
     
     let tx = new TransactionBuilder(account, {
@@ -212,9 +218,17 @@ export default function App() {
     
     addTerminalLine('info', 'Simulating transaction to construct footprints & allocate storage...');
     tx = await server.prepareTransaction(tx);
+    const txXdr = tx.toXDR();
+    
+    if (useManual) {
+      addTerminalLine('warning', 'Manual mode active: prepared transaction generated. Please sign this transaction manually.');
+      setPendingTxXdr(txXdr);
+      setShowXdrModal(true);
+      throw new Error("Manual signing required. Please use the XDR panel.");
+    }
     
     addTerminalLine('info', 'Prompting signature from Freighter extension...');
-    const signedXdr = await provider.signTransaction(tx.toXDR(), {
+    const signedXdr = await provider.signTransaction(txXdr, {
       network: 'TESTNET'
     });
     
@@ -243,6 +257,55 @@ export default function App() {
     }
     
     throw new Error('Polling timed out.');
+  };
+
+  // --- MANUAL XDR SUBMISSION ---
+  const handleSubmitSignedXdr = async () => {
+    if (!signedXdrInput) {
+      alert("Please paste the signed XDR first.");
+      return;
+    }
+    setTestnetLoading(true);
+    addTerminalLine('info', 'Submitting manually signed transaction to Stellar Testnet...');
+    try {
+      const server = new rpc.Server('https://soroban-testnet.stellar.org');
+      const signedTx = TransactionBuilder.fromXDR(signedXdrInput.trim(), Networks.TESTNET);
+      
+      const response = await server.sendTransaction(signedTx);
+      if (response.status === 'ERROR') {
+        throw new Error(`RPC submit error: ${JSON.stringify(response.errorResult)}`);
+      }
+      
+      const txHash = response.hash;
+      addTerminalLine('info', `Transaction submitted. Tx Hash: ${txHash.substring(0, 16)}...`);
+      addTerminalLine('info', 'Waiting for block consensus...');
+      
+      let confirmed = false;
+      for (let i = 0; i < 20; i++) {
+        const txStatus = await server.getTransaction(txHash);
+        if (txStatus.status === 'SUCCESS') {
+          addTerminalLine('success', `Manually signed transaction confirmed successfully!`);
+          confirmed = true;
+          setShowXdrModal(false);
+          setSignedXdrInput('');
+          setPendingTxXdr('');
+          break;
+        } else if (txStatus.status === 'FAILED') {
+          throw new Error('Transaction execution failed.');
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!confirmed) {
+        throw new Error("Polling timed out.");
+      }
+      
+      fetchOnchainBalance();
+      refreshVmState();
+    } catch (err) {
+      addTerminalLine('error', `Submission failed: ${err.message}`);
+    } finally {
+      setTestnetLoading(false);
+    }
   };
 
   // --- PROOF UPLOAD HANDLER ---
@@ -755,6 +818,23 @@ export default function App() {
             </span>
           )}
 
+          {isTestnetMode && (
+            <button 
+              className={`btn ${isManualWalletMode ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ fontSize: '12px', padding: '8px 16px' }}
+              onClick={() => {
+                setIsManualWalletMode(!isManualWalletMode);
+                if (!isManualWalletMode) {
+                  addTerminalLine('info', 'Manual wallet mode activated. Paste your G... address below in the Active Wallet Address card.');
+                } else {
+                  addTerminalLine('info', 'Manual wallet mode deactivated.');
+                }
+              }}
+            >
+              ✍️ {isManualWalletMode ? 'Manual Input Mode' : 'Use Manual Address'}
+            </button>
+          )}
+
           <button 
             className="btn btn-secondary" 
             style={{ fontSize: '12px', padding: '8px 16px' }}
@@ -824,7 +904,22 @@ export default function App() {
           <span className="form-label">Active Wallet Address</span>
           <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)', wordBreak: 'break-all', display: 'block' }}>
             {isTestnetMode ? (
-              freighterConnected ? (
+              isManualWalletMode ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Paste G... address" 
+                    className="form-input form-input-mono"
+                    style={{ padding: '4px 8px', fontSize: '11px' }}
+                    value={manualAddressInput}
+                    onChange={(e) => {
+                      setManualAddressInput(e.target.value);
+                      setUserWalletAddress(e.target.value); // Sync target wallet
+                    }}
+                  />
+                  <span style={{ fontSize: '10px', color: 'var(--neon-cyan)', fontWeight: 'bold' }}>✍️ MANUAL WALLET ACTIVE</span>
+                </div>
+              ) : freighterConnected ? (
                 <span className="glow-text-emerald" style={{ wordBreak: 'break-all' }}>🟢 {freighterAddress}</span>
               ) : (
                 <button 
@@ -1188,6 +1283,68 @@ export default function App() {
               <div ref={terminalEndRef}></div>
             </div>
           </div>
+
+          {/* MANUAL SIGNING / XDR PANEL */}
+          {isTestnetMode && (isManualWalletMode || showXdrModal) && pendingTxXdr && (
+            <div className="glass-panel" style={{ padding: '20px', borderColor: 'var(--border-active)', boxShadow: 'var(--glow-violet)' }}>
+              <div className="panel-header" style={{ marginBottom: '12px' }}>
+                <h3 className="panel-title" style={{ fontSize: '15px' }}>✍️ Manual signing / XDR Panel</h3>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ padding: '2px 8px', fontSize: '10px' }}
+                  onClick={() => { setPendingTxXdr(''); setShowXdrModal(false); }}
+                >
+                  Clear
+                </button>
+              </div>
+              <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '12px', lineHeight: '1.4' }}>
+                Copy the prepared transaction XDR and sign it using your wallet or the official Stellar Laboratory:
+              </p>
+              
+              <div className="form-group">
+                <label className="form-label" style={{ fontSize: '10px' }}>Prepared Tx XDR (Base64)</label>
+                <textarea 
+                  className="form-input form-input-mono"
+                  style={{ height: '70px', fontSize: '11px', resize: 'vertical' }}
+                  readOnly 
+                  value={pendingTxXdr}
+                  onClick={(e) => e.target.select()}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                <a 
+                  href={`https://laboratory.stellar.org/#txsigner?xdr=${encodeURIComponent(pendingTxXdr)}&network=testnet`} 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="btn btn-primary"
+                  style={{ flex: 1, fontSize: '11px', textDecoration: 'none', textAlign: 'center', padding: '10px' }}
+                >
+                  🚀 Sign on Stellar Laboratory
+                </a>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ fontSize: '10px' }}>Paste Signed Transaction XDR</label>
+                <textarea 
+                  className="form-input form-input-mono"
+                  placeholder="AAAA..."
+                  style={{ height: '70px', fontSize: '11px', resize: 'vertical' }}
+                  value={signedXdrInput}
+                  onChange={(e) => setSignedXdrInput(e.target.value)}
+                />
+              </div>
+
+              <button 
+                className="btn btn-success" 
+                style={{ width: '100%', fontSize: '12px', padding: '10px' }}
+                onClick={handleSubmitSignedXdr}
+                disabled={testnetLoading}
+              >
+                📡 Submit Transaction to Testnet
+              </button>
+            </div>
+          )}
 
           {/* SOROBAN LEDGER LOGS */}
           <div className="glass-panel" style={{ padding: '20px', flex: 1 }}>
