@@ -4,9 +4,8 @@ members = [
     "compliance-shield",
     "rwa-token",
 ]
-
 [workspace.dependencies]
-soroban-sdk = { version = "26.0.1", default-features = false }
+soroban-sdk = { version = "26.0.1" }
 
 [profile.release]
 opt-level = "z"

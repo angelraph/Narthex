@@ -60,13 +60,18 @@ async function run() {
   const secretSaltHex = '0x' + secretSaltBytes.toString('hex');
   const bannedCountries = [1, 2, 3, 4, 5]; // US (840) is not banned
 
-  // D. Mock target wallet to register
-  const targetWalletKeypair = Keypair.random();
-  const targetWalletAddress = targetWalletKeypair.publicKey();
-  console.log(`Target wallet address: ${targetWalletAddress}`);
+  // D. Target wallet to register
+  let targetWalletAddress = process.argv[2];
+  if (!targetWalletAddress) {
+    console.log("No target wallet address provided as argument. Generating a random keypair...");
+    const targetWalletKeypair = Keypair.random();
+    targetWalletAddress = targetWalletKeypair.publicKey();
+  } else {
+    console.log(`Using provided target wallet address: ${targetWalletAddress}`);
+  }
 
   // Serialize target wallet address using Stellar SDK to match SCAddress XDR
-  const addr = new Address(targetWalletAddress);
+  const addr = new Address(targetWalletAddress.trim());
   const scAddress = addr.toScAddress();
   const xdrBytes = scAddress.toXDR();
   console.log(`XDR Serialized wallet length: ${xdrBytes.length} bytes`);

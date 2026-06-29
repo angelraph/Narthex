@@ -2,6 +2,7 @@
 extern crate alloc;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::xdr::ToXdr;
 use blake2::{Blake2s256, Digest};
 use ultrahonk_soroban_verifier::UltraHonkVerifier;
 
@@ -74,7 +75,7 @@ impl ComplianceShield {
         let banned_countries: Vec<u32> = env.storage().instance().get(&DataKey::BannedCountries).unwrap();
 
         // 3. Hash the wallet address to match the target_wallet public input
-        let xdr_bytes = wallet.to_xdr(&env);
+        let xdr_bytes = wallet.clone().to_xdr(&env);
         let mut xdr_vec = alloc::vec![0u8; xdr_bytes.len() as usize];
         xdr_bytes.copy_into_slice(&mut xdr_vec);
 

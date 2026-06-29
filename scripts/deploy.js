@@ -115,11 +115,11 @@ async function run() {
 
   try {
     // 1. Deploy ComplianceShield
-    const shieldWasmPath = path.resolve('contracts/target/wasm32-unknown-unknown/release/compliance_shield.wasm');
+    const shieldWasmPath = path.resolve('contracts/target/wasm32v1-none/release/compliance_shield.wasm');
     const shieldContractId = await instantiateContract(sourceKeypair, shieldWasmPath);
 
     // 2. Deploy RwaToken
-    const tokenWasmPath = path.resolve('contracts/target/wasm32-unknown-unknown/release/rwa_token.wasm');
+    const tokenWasmPath = path.resolve('contracts/target/wasm32v1-none/release/rwa_token.wasm');
     const tokenContractId = await instantiateContract(sourceKeypair, tokenWasmPath);
 
     console.log("=================================================");

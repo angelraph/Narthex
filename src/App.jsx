@@ -3,6 +3,7 @@ import pkg from 'elliptic';
 import blake from 'blakejs';
 import { Address, Keypair, Contract, rpc, scValToNative, nativeToScVal, Networks, TransactionBuilder, Account } from 'stellar-sdk';
 import { MockSorobanVM } from './mockSoroban';
+import logoImg from './narthex_logo.png';
 
 const { ec: EC } = pkg;
 const ec = new EC('secp256k1');
@@ -16,11 +17,14 @@ export default function App() {
   const [shieldState, setShieldState] = useState(vm.shield);
   const [tokenState, setTokenState] = useState(vm.token);
 
-  // Live Testnet Bridge State
-  const [testnetContractId, setTestnetContractId] = useState('');
-  const [testnetWalletAddress, setTestnetWalletAddress] = useState('');
+  // Live Testnet Bridge & Freighter States
+  const [isTestnetMode, setIsTestnetMode] = useState(false);
+  const [freighterConnected, setFreighterConnected] = useState(false);
+  const [freighterAddress, setFreighterAddress] = useState('');
+  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || '');
+  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || '');
   const [testnetLoading, setTestnetLoading] = useState(false);
-  const [testnetResult, setTestnetResult] = useState(null);
+  const [onchainBalance, setOnchainBalance] = useState('0');
 
   // Banned Countries Admin input
   const [bannedInputString, setBannedInputString] = useState('1, 2, 3, 4, 5');
@@ -119,8 +123,135 @@ export default function App() {
     setTerminalLines(prev => [...prev, { type, text }]);
   };
 
+  // --- LOCALSTORAGE SYNC ---
+  const updateShieldContractId = (val) => {
+    setTestnetShieldContractId(val);
+    localStorage.setItem('narthex_shield_id', val);
+  };
+
+  const updateTokenContractId = (val) => {
+    setTestnetTokenContractId(val);
+    localStorage.setItem('narthex_token_id', val);
+  };
+
+  // --- FREIGHTER CONNECTION ---
+  const isFreighterInstalled = () => typeof window !== 'undefined' && !!window.stellar;
+
+  const connectFreighter = async () => {
+    if (!isFreighterInstalled()) {
+      addTerminalLine('error', 'Freighter extension not found. Please install the browser extension.');
+      return;
+    }
+    try {
+      setTestnetLoading(true);
+      const pubKey = await window.stellar.getPublicKey();
+      setFreighterAddress(pubKey);
+      setFreighterConnected(true);
+      setUserWalletAddress(pubKey);
+      addTerminalLine('success', `Freighter Connected! Address: ${pubKey}`);
+    } catch (e) {
+      addTerminalLine('error', `Connection failed: ${e.message}`);
+    } finally {
+      setTestnetLoading(false);
+    }
+  };
+
+  // --- ON-CHAIN TRANSACTIONS HANDLER ---
+  const executeSorobanTransaction = async (contractId, functionName, scArgs) => {
+    if (!isFreighterInstalled()) {
+      throw new Error("Freighter wallet not installed.");
+    }
+    const server = new rpc.Server('https://soroban-testnet.stellar.org');
+    
+    const activeAddress = freighterAddress || await window.stellar.getPublicKey();
+    if (!activeAddress) {
+      throw new Error("Freighter wallet not connected.");
+    }
+    
+    addTerminalLine('info', `Building real on-chain transaction for '${functionName}'...`);
+    
+    const account = await server.getAccount(activeAddress);
+    const contract = new Contract(contractId.trim());
+    
+    let tx = new TransactionBuilder(account, {
+      fee: '100000',
+      networkPassphrase: Networks.TESTNET
+    })
+    .addOperation(contract.call(functionName, ...scArgs))
+    .setTimeout(60)
+    .build();
+    
+    addTerminalLine('info', 'Simulating transaction to construct footprints & allocate storage...');
+    tx = await server.prepareTransaction(tx);
+    
+    addTerminalLine('info', 'Prompting signature from Freighter extension...');
+    const signedXdr = await window.stellar.signTransaction(tx.toXDR(), {
+      network: 'TESTNET'
+    });
+    
+    const signedTx = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
+    
+    addTerminalLine('info', 'Broadcasting transaction to Stellar Testnet...');
+    const response = await server.sendTransaction(signedTx);
+    
+    if (response.status === 'ERROR') {
+      throw new Error(`RPC submit error: ${JSON.stringify(response.errorResult)}`);
+    }
+    
+    const txHash = response.hash;
+    addTerminalLine('info', `Transaction submitted. Tx Hash: ${txHash.substring(0, 16)}...`);
+    addTerminalLine('info', 'Waiting for block consensus...');
+    
+    for (let i = 0; i < 20; i++) {
+      const txStatus = await server.getTransaction(txHash);
+      if (txStatus.status === 'SUCCESS') {
+        addTerminalLine('success', `Tx confirmed successfully!`);
+        return { success: true, hash: txHash };
+      } else if (txStatus.status === 'FAILED') {
+        throw new Error('Transaction execution failed.');
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    
+    throw new Error('Polling timed out.');
+  };
+
+  // --- PROOF UPLOAD HANDLER ---
+  const handleProofFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (!data.proof_hex || !data.nullifier) {
+          addTerminalLine('error', 'Invalid proof_summary.json structure: missing proof_hex or nullifier.');
+          return;
+        }
+        setGeneratedProof({
+          proof: data.proof_hex,
+          nullifier: data.nullifier,
+          wallet: data.target_wallet || userWalletAddress,
+          publicInputs: {
+            walletHash: data.wallet_hash,
+            bannedCountries: data.banned_countries
+          }
+        });
+        if (data.target_wallet) {
+          setUserWalletAddress(data.target_wallet);
+        }
+        addTerminalLine('success', 'Real ZK-Proof summary successfully uploaded!');
+        addTerminalLine('info', `Nullifier: ${data.nullifier}`);
+        addTerminalLine('info', `Target Wallet Address: ${data.target_wallet}`);
+      } catch (err) {
+        addTerminalLine('error', `Failed to parse proof JSON file: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // Admin: Update Banned Countries in Contract
-  const handleUpdateBannedCountries = () => {
+  const handleUpdateBannedCountries = async () => {
     try {
       const parsedList = bannedInputString
         .split(',')
@@ -132,78 +263,30 @@ export default function App() {
         return;
       }
       
-      vm.updateBannedCountries(
-        'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX', // Admin caller
-        parsedList
-      );
-      
-      setBannedList(parsedList);
+      if (isTestnetMode) {
+        if (!testnetShieldContractId) {
+          addTerminalLine('error', 'Please enter a valid ComplianceShield Contract ID.');
+          return;
+        }
+        setTestnetLoading(true);
+        const scArgs = [
+          nativeToScVal(parsedList.map(n => nativeToScVal(n, { type: 'u32' })))
+        ];
+        const txRes = await executeSorobanTransaction(testnetShieldContractId, 'update_banned_countries', scArgs);
+        setBannedList(parsedList);
+        addTerminalLine('success', `On-chain updated banned countries! Explorer: https://stellar.expert/explorer/testnet/tx/${txRes.hash}`);
+        vm.addLog('ComplianceShield', 'update_banned_countries()', 'success', `On-Chain Tx: ${txRes.hash.substring(0,8)}...`);
+      } else {
+        vm.updateBannedCountries(
+          'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX', // Admin caller
+          parsedList
+        );
+        setBannedList(parsedList);
+        addTerminalLine('success', `Banned country IDs successfully updated to: [${parsedList.join(', ')}]`);
+      }
       refreshVmState();
-      addTerminalLine('success', `Banned country IDs successfully updated to: [${parsedList.join(', ')}]`);
     } catch (err) {
       addTerminalLine('error', `Contract update failed: ${err.message}`);
-    }
-  };
-
-  // Live Testnet Bridge: Query contract
-  const handleQueryTestnet = async () => {
-    if (!testnetContractId || !testnetWalletAddress) {
-      setTestnetResult({ error: 'Please enter both Contract ID and Wallet Address.' });
-      return;
-    }
-
-    setTestnetLoading(true);
-    setTestnetResult(null);
-    const startTime = Date.now();
-
-    try {
-      const server = new rpc.Server('https://soroban-testnet.stellar.org');
-      const contract = new Contract(testnetContractId.trim());
-      const targetAddr = new Address(testnetWalletAddress.trim());
-
-      const tempKeypair = Keypair.random();
-      const account = new Account(tempKeypair.publicKey(), '0');
-
-      const tx = new TransactionBuilder(account, {
-        fee: '100',
-        networkPassphrase: Networks.TESTNET
-      })
-      .addOperation(
-        contract.call('is_wallet_eligible', nativeToScVal(targetAddr))
-      )
-      .setTimeout(30)
-      .build();
-
-      const simResponse = await server.simulateTransaction(tx);
-      const latency = Date.now() - startTime;
-
-      if (simResponse.error) {
-        setTestnetResult({
-          error: simResponse.error,
-          latency,
-          success: false
-        });
-      } else if (simResponse.result && simResponse.result.retval) {
-        const isEligible = scValToNative(simResponse.result.retval);
-        setTestnetResult({
-          eligible: isEligible,
-          latency,
-          success: true
-        });
-      } else {
-        setTestnetResult({
-          error: 'No return value from contract simulation.',
-          latency,
-          success: false
-        });
-      }
-    } catch (err) {
-      const latency = Date.now() - startTime;
-      setTestnetResult({
-        error: err.message || 'Failed to connect to Testnet RPC.',
-        latency,
-        success: false
-      });
     } finally {
       setTestnetLoading(false);
     }
@@ -292,6 +375,12 @@ export default function App() {
 
   // Client-Side: Generate ZK Proof using Noir inputs structure
   const handleGenerateProof = async () => {
+    if (isTestnetMode) {
+      addTerminalLine('info', 'Please generate ZK Proof locally to bypass browser constraints.');
+      addTerminalLine('info', `CLI command: node scripts/prove.js ${userWalletAddress}`);
+      return;
+    }
+
     if (!issuedCredential) {
       addTerminalLine('error', 'Cannot generate proof: No KYC credential found from the Issuer!');
       return;
@@ -310,7 +399,6 @@ export default function App() {
 
     addTerminalLine('info', 'Binding private and public inputs for Noir main()...');
     
-    // Calculate simulated target wallet hash
     let computedHashHex = '0x' + '00'.repeat(32);
     try {
       computedHashHex = vm.computeWalletHash(userWalletAddress);
@@ -320,18 +408,15 @@ export default function App() {
     }
 
     const noirInputs = {
-      // Private inputs
       user_pubkey_x: issuedCredential.userPubkeyX,
       user_pubkey_y: issuedCredential.userPubkeyY,
-      user_signature: '0x' + '00'.repeat(64), // signature verifying possession
+      user_signature: '0x' + '00'.repeat(64),
       issuer_signature: issuedCredential.issuerSignature,
       issuer_pub_key_x: '0x' + issuerPubHex.substring(2, 66),
       issuer_pub_key_y: '0x' + issuerPubHex.substring(66),
       country_code: issuedCredential.countryCode,
       is_accredited: issuedCredential.isAccredited,
       secret_salt: issuedCredential.salt,
-
-      // Public inputs
       target_wallet_hash: computedHashHex,
       banned_countries: bannedList
     };
@@ -339,7 +424,6 @@ export default function App() {
     addTerminalLine('info', `Compiling ZK Witness values:\n${JSON.stringify(noirInputs, null, 2)}`);
     await new Promise(r => setTimeout(r, 1200));
 
-    // Verify non-membership check locally as part of proof prep
     const isBanned = bannedList.includes(issuedCredential.countryCode);
     if (isBanned) {
       addTerminalLine('error', `Assertion failure: country_code ${issuedCredential.countryCode} matches a banned country ID!`);
@@ -356,8 +440,7 @@ export default function App() {
     addTerminalLine('info', 'Running grand product arguments and lookup protocols...');
     await new Promise(r => setTimeout(r, 800));
 
-    // Success Proof Payload
-    const dummyProofHex = '0x' + 'ab'.repeat(512); // Mocked 512 bytes proof data
+    const dummyProofHex = '0x' + 'ab'.repeat(512);
     const nullifierHex = '0x' + blake.blake2s(Buffer.from(issuedCredential.salt), null, 32).toString('hex');
     
     const proofResult = {
@@ -379,69 +462,217 @@ export default function App() {
   };
 
   // Submit Proof to Soroban ComplianceShield contract
-  const handleSubmitProof = () => {
+  const handleSubmitProof = async () => {
     if (!generatedProof) return;
 
     try {
-      vm.registerWallet(
-        userWalletAddress, // Wallet caller
-        generatedProof.proof,
-        generatedProof.nullifier,
-        generatedProof.wallet
-      );
-      
-      refreshVmState();
-      addTerminalLine('success', 'Wallet eligible! registered on ComplianceShield.');
+      if (isTestnetMode) {
+        if (!testnetShieldContractId) {
+          addTerminalLine('error', 'Please enter a ComplianceShield Contract ID.');
+          return;
+        }
+        setTestnetLoading(true);
+        addTerminalLine('info', 'Preparing register_wallet invocation on-chain...');
+
+        const proofBuffer = Buffer.from(generatedProof.proof.replace('0x', ''), 'hex');
+        const nullifierBuffer = Buffer.from(generatedProof.nullifier.replace('0x', ''), 'hex');
+        
+        const scArgs = [
+          nativeToScVal(proofBuffer),
+          nativeToScVal(nullifierBuffer),
+          nativeToScVal(new Address(generatedProof.wallet.trim()))
+        ];
+
+        const txRes = await executeSorobanTransaction(testnetShieldContractId, 'register_wallet', scArgs);
+        
+        vm.shield.eligible.set(generatedProof.wallet.trim(), true);
+        refreshVmState();
+        
+        addTerminalLine('success', `Registered user wallet on-chain! Explorer: https://stellar.expert/explorer/testnet/tx/${txRes.hash}`);
+        vm.addLog('ComplianceShield', 'register_wallet()', 'success', `On-Chain Tx: ${txRes.hash.substring(0,8)}...`);
+      } else {
+        vm.registerWallet(
+          userWalletAddress, // Wallet caller
+          generatedProof.proof,
+          generatedProof.nullifier,
+          generatedProof.wallet
+        );
+        refreshVmState();
+        addTerminalLine('success', 'Wallet eligible! registered on ComplianceShield.');
+      }
     } catch (err) {
       addTerminalLine('error', `Contract verification failed: ${err.message}`);
+    } finally {
+      setTestnetLoading(false);
     }
   };
 
   // RWA Token: Mint
-  const handleMintTokens = () => {
+  const handleMintTokens = async () => {
     try {
-      vm.mint(
-        'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX', // Caller (admin)
-        userWalletAddress, // Target Wallet
-        rwaAmount
-      );
+      if (isTestnetMode) {
+        if (!testnetTokenContractId) {
+          addTerminalLine('error', 'Please enter the RwaToken Contract ID.');
+          return;
+        }
+        setTestnetLoading(true);
+        addTerminalLine('info', 'Preparing mint invocation on-chain...');
+
+        const scArgs = [
+          nativeToScVal(new Address(userWalletAddress.trim())),
+          nativeToScVal(BigInt(rwaAmount))
+        ];
+
+        const txRes = await executeSorobanTransaction(testnetTokenContractId, 'mint', scArgs);
+        
+        addTerminalLine('success', `Minted RWA assets on-chain! Explorer: https://stellar.expert/explorer/testnet/tx/${txRes.hash}`);
+        vm.addLog('RwaToken', 'mint()', 'success', `On-Chain Tx: ${txRes.hash.substring(0,8)}...`);
+        fetchOnchainBalance();
+      } else {
+        vm.mint(
+          'GDADMIN1234567890COMPLIANCEADMINXXXXXXXXX', // Caller (admin)
+          userWalletAddress, // Target Wallet
+          rwaAmount
+        );
+      }
       refreshVmState();
     } catch (err) {
       addTerminalLine('error', `Mint transaction failed: ${err.message}`);
+    } finally {
+      setTestnetLoading(false);
     }
   };
 
   // RWA Token: Transfer
-  const handleTransferTokens = () => {
+  const handleTransferTokens = async () => {
     try {
-      vm.transfer(
-        userWalletAddress, // Caller (sender)
-        targetRecipient, // Receiver
-        rwaAmount
-      );
+      if (isTestnetMode) {
+        if (!testnetTokenContractId) {
+          addTerminalLine('error', 'Please enter the RwaToken Contract ID.');
+          return;
+        }
+        setTestnetLoading(true);
+        addTerminalLine('info', 'Preparing transfer invocation on-chain...');
+
+        const scArgs = [
+          nativeToScVal(new Address(userWalletAddress.trim())),
+          nativeToScVal(new Address(targetRecipient.trim())),
+          nativeToScVal(BigInt(rwaAmount))
+        ];
+
+        const txRes = await executeSorobanTransaction(testnetTokenContractId, 'transfer', scArgs);
+        
+        addTerminalLine('success', `Transferred assets on-chain! Explorer: https://stellar.expert/explorer/testnet/tx/${txRes.hash}`);
+        vm.addLog('RwaToken', 'transfer()', 'success', `On-Chain Tx: ${txRes.hash.substring(0,8)}...`);
+        fetchOnchainBalance();
+      } else {
+        vm.transfer(
+          userWalletAddress, // Caller (sender)
+          targetRecipient, // Receiver
+          rwaAmount
+        );
+      }
       refreshVmState();
     } catch (err) {
       addTerminalLine('error', `Transfer transaction failed: ${err.message}`);
+    } finally {
+      setTestnetLoading(false);
     }
   };
 
   // Check Wallet Eligibility
-  const handleCheckEligibility = () => {
+  const handleCheckEligibility = async () => {
     if (!walletCheckAddr) return;
-    const isEligible = vm.isWalletEligible(walletCheckAddr);
-    setCheckResult({ address: walletCheckAddr, eligible: isEligible });
+    
+    if (isTestnetMode) {
+      if (!testnetShieldContractId) {
+        addTerminalLine('error', 'Please enter the ComplianceShield Contract ID.');
+        return;
+      }
+      setTestnetLoading(true);
+      try {
+        const server = new rpc.Server('https://soroban-testnet.stellar.org');
+        const contract = new Contract(testnetShieldContractId.trim());
+        const targetAddr = new Address(walletCheckAddr.trim());
+
+        const tempKeypair = Keypair.random();
+        const account = new Account(tempKeypair.publicKey(), '0');
+
+        const tx = new TransactionBuilder(account, {
+          fee: '100',
+          networkPassphrase: Networks.TESTNET
+        })
+        .addOperation(
+          contract.call('is_wallet_eligible', nativeToScVal(targetAddr))
+        )
+        .setTimeout(30)
+        .build();
+
+        const simResponse = await server.simulateTransaction(tx);
+        if (simResponse.result && simResponse.result.retval) {
+          const isEligible = scValToNative(simResponse.result.retval);
+          setCheckResult({ address: walletCheckAddr, eligible: isEligible });
+        } else {
+          throw new Error('Simulation result empty');
+        }
+      } catch (err) {
+        addTerminalLine('error', `Failed to check eligibility on-chain: ${err.message}`);
+      } finally {
+        setTestnetLoading(false);
+      }
+    } else {
+      const isEligible = vm.isWalletEligible(walletCheckAddr);
+      setCheckResult({ address: walletCheckAddr, eligible: isEligible });
+    }
   };
+
+  // Fetch On-chain Balance
+  const fetchOnchainBalance = async () => {
+    if (!isTestnetMode || !testnetTokenContractId || !userWalletAddress) return;
+    try {
+      const server = new rpc.Server('https://soroban-testnet.stellar.org');
+      const contract = new Contract(testnetTokenContractId.trim());
+      const targetAddr = new Address(userWalletAddress.trim());
+
+      const tempKeypair = Keypair.random();
+      const account = new Account(tempKeypair.publicKey(), '0');
+
+      const tx = new TransactionBuilder(account, {
+        fee: '100',
+        networkPassphrase: Networks.TESTNET
+      })
+      .addOperation(
+        contract.call('balance', nativeToScVal(targetAddr))
+      )
+      .setTimeout(30)
+      .build();
+
+      const simResponse = await server.simulateTransaction(tx);
+      if (simResponse.result && simResponse.result.retval) {
+        const bal = scValToNative(simResponse.result.retval);
+        setOnchainBalance(bal.toString());
+      }
+    } catch (e) {
+      console.warn("Failed to fetch on-chain balance:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (isTestnetMode) {
+      fetchOnchainBalance();
+    }
+  }, [isTestnetMode, testnetTokenContractId, userWalletAddress]);
 
   return (
     <div className="dashboard-container">
       {/* HEADER NAVBAR */}
       <header className="dashboard-header">
-        <div className="brand-section">
-          <span className="brand-icon">🛡️</span>
+        <div className="brand-section" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <img src={logoImg} alt="Narthex Logo" style={{ height: '38px', width: '38px', borderRadius: '8px', border: '1px solid var(--border-glass)' }} />
           <div>
-            <h1 className="brand-title">Compliance Shield</h1>
-            <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
-              ZK-SEP-57 Soroban Protocol Showcase
+            <h1 className="brand-title" style={{ fontSize: '20px', fontWeight: '800', letterSpacing: '0.5px', background: 'linear-gradient(to right, var(--neon-cyan), #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', margin: 0 }}>Narthex</h1>
+            <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', margin: '2px 0 0 0' }}>
+              ZK-SEP-57 Compliance Shield on Soroban
             </p>
           </div>
         </div>
@@ -467,30 +698,90 @@ export default function App() {
           </button>
         </nav>
 
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }} className="header-actions">
+          <button 
+            className={`btn ${isTestnetMode ? 'btn-primary' : 'btn-secondary'}`}
+            style={{ fontSize: '12px', padding: '8px 16px' }}
+            onClick={() => {
+              setIsTestnetMode(!isTestnetMode);
+              addTerminalLine('info', `Switched mode to: ${!isTestnetMode ? 'Stellar Testnet (On-Chain)' : 'Simulated Soroban VM'}`);
+            }}
+          >
+            {isTestnetMode ? '🌐 Live Testnet' : '💻 Simulator'}
+          </button>
+          
+          {isTestnetMode && !freighterConnected && (
+            <button 
+              className="btn btn-success" 
+              style={{ fontSize: '12px', padding: '8px 16px' }}
+              onClick={connectFreighter}
+            >
+              🔌 Connect Freighter
+            </button>
+          )}
+
+          {isTestnetMode && freighterConnected && (
+            <span className="badge-country" style={{ borderColor: 'var(--neon-emerald)', color: 'var(--neon-emerald)', fontSize: '11px' }}>
+              🟢 {freighterAddress.substring(0,6)}...{freighterAddress.substring(freighterAddress.length-4)}
+            </span>
+          )}
+
           <button 
             className="btn btn-secondary" 
             style={{ fontSize: '12px', padding: '8px 16px' }}
             onClick={handleDeployContracts}
+            disabled={isTestnetMode}
           >
-            ⚡ Restart Contracts
+            ⚡ Restart VM
           </button>
         </div>
       </header>
 
       {/* OVERVIEW PANEL */}
-      <div className="glass-panel" style={{ padding: '16px 24px', display: 'flex', gap: '32px', flexWrap: 'wrap' }}>
+      <div className="glass-panel overview-grid" style={{ padding: '16px 24px' }}>
         <div>
           <span className="form-label">Compliance Shield Registry</span>
-          <span style={{ fontSize: '14px', fontFamily: 'var(--font-mono)' }} className={shieldState.initialized ? "glow-text-emerald" : "glow-text-rose"}>
-            {shieldState.initialized ? '🟢 ACTIVE (GDSHIELD...)' : '🔴 NOT INITIALIZED'}
-          </span>
+          {isTestnetMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <input 
+                type="text" 
+                placeholder="Paste contract ID..." 
+                className="form-input form-input-mono"
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                value={testnetShieldContractId}
+                onChange={(e) => updateShieldContractId(e.target.value)}
+              />
+              <span style={{ fontSize: '11px' }} className={testnetShieldContractId ? "glow-text-cyan" : "glow-text-rose"}>
+                {testnetShieldContractId ? '🌐 ON-CHAIN CONTRACT' : '🔴 ID REQUIRED'}
+              </span>
+            </div>
+          ) : (
+            <span style={{ fontSize: '14px', fontFamily: 'var(--font-mono)' }} className={shieldState.initialized ? "glow-text-emerald" : "glow-text-rose"}>
+              {shieldState.initialized ? '🟢 ACTIVE (GDSHIELD...)' : '🔴 NOT INITIALIZED'}
+            </span>
+          )}
         </div>
         <div>
           <span className="form-label">RWA Protected Token</span>
-          <span style={{ fontSize: '14px', fontFamily: 'var(--font-mono)' }} className={tokenState.initialized ? "glow-text-cyan" : "glow-text-rose"}>
-            {tokenState.initialized ? `🔵 ${tokenState.name} (${tokenState.symbol})` : '🔴 NOT INITIALIZED'}
-          </span>
+          {isTestnetMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <input 
+                type="text" 
+                placeholder="Paste contract ID..." 
+                className="form-input form-input-mono"
+                style={{ padding: '4px 8px', fontSize: '11px' }}
+                value={testnetTokenContractId}
+                onChange={(e) => updateTokenContractId(e.target.value)}
+              />
+              <span style={{ fontSize: '11px' }} className={testnetTokenContractId ? "glow-text-cyan" : "glow-text-rose"}>
+                {testnetTokenContractId ? '🌐 ON-CHAIN TOKEN' : '🔴 ID REQUIRED'}
+              </span>
+            </div>
+          ) : (
+            <span style={{ fontSize: '14px', fontFamily: 'var(--font-mono)' }} className={tokenState.initialized ? "glow-text-cyan" : "glow-text-rose"}>
+              {tokenState.initialized ? `🔵 ${tokenState.name} (${tokenState.symbol})` : '🔴 NOT INITIALIZED'}
+            </span>
+          )}
         </div>
         <div>
           <span className="form-label">Banned Country IDs</span>
@@ -501,9 +792,9 @@ export default function App() {
           </div>
         </div>
         <div>
-          <span className="form-label">Issuer Public Key</span>
-          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
-            {issuerPubHex ? `${issuerPubHex.substring(0, 18)}...` : 'Not Loaded'}
+          <span className="form-label">Active Wallet Address</span>
+          <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}>
+            {isTestnetMode ? (freighterAddress || 'Freighter Not Connected') : (userWalletAddress || 'Not Loaded')}
           </span>
         </div>
       </div>
@@ -585,7 +876,7 @@ export default function App() {
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span>🚫</span> Update Banned Countries on Registry (Admin)
                 </label>
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px' }} className="button-group-responsive">
                   <input 
                     type="text" 
                     className="form-input form-input-mono" 
@@ -597,12 +888,13 @@ export default function App() {
                     className="btn btn-secondary" 
                     style={{ fontSize: '13px', whiteSpace: 'nowrap' }}
                     onClick={handleUpdateBannedCountries}
+                    disabled={testnetLoading}
                   >
                     Update Shield
                   </button>
                 </div>
                 <span style={{ fontSize: '11px', color: 'var(--color-text-muted)', display: 'block', marginTop: '4px' }}>
-                  Enter exactly 5 comma-separated numeric IDs. Admin signature will authenticate this on-chain call.
+                  Enter exactly 5 comma-separated numeric IDs. Admin signature will authenticate this call.
                 </span>
               </div>
             </div>
@@ -629,32 +921,58 @@ export default function App() {
                 />
               </div>
 
-              <div className="form-group" style={{ opacity: issuedCredential ? 1 : 0.5 }}>
-                <span className="form-label">Issuer Credential Status</span>
-                <div style={{ fontSize: '13px', fontWeight: '600' }}>
-                  {issuedCredential ? (
-                    <span className="glow-text-emerald">✓ Credential Loaded (Country: {issuedCredential.countryCode})</span>
-                  ) : (
-                    <span className="glow-text-rose">✗ No Credential found (Go to Issuer tab first)</span>
+              {isTestnetMode && (
+                <div className="form-group" style={{ border: '1px dashed var(--border-active)', padding: '16px', borderRadius: '12px', background: 'rgba(139, 92, 246, 0.05)', marginBottom: '20px' }}>
+                  <label className="form-label" style={{ color: 'var(--neon-violet)', fontWeight: 'bold' }}>📤 Upload ZK Proof Summary (On-Chain Mode)</label>
+                  <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginBottom: '12px', lineHeight: '1.4' }}>
+                    Generate a real proof locally using your Freighter address:<br/>
+                    <code style={{ background: '#000', padding: '4px 8px', borderRadius: '4px', display: 'inline-block', marginTop: '6px', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+                      node scripts/prove.js {userWalletAddress || 'G...'}
+                    </code>
+                  </p>
+                  <input 
+                    type="file" 
+                    accept=".json"
+                    className="form-input" 
+                    style={{ fontSize: '13px' }}
+                    onChange={handleProofFileUpload} 
+                  />
+                  {generatedProof && generatedProof.wallet && (
+                    <span style={{ fontSize: '11px', color: 'var(--neon-emerald)', display: 'block', marginTop: '6px' }}>
+                      ✓ Proof loaded for wallet: {generatedProof.wallet.substring(0,12)}...
+                    </span>
                   )}
                 </div>
-              </div>
+              )}
 
-              <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+              {!isTestnetMode && (
+                <div className="form-group" style={{ opacity: issuedCredential ? 1 : 0.5 }}>
+                  <span className="form-label">Issuer Credential Status</span>
+                  <div style={{ fontSize: '13px', fontWeight: '600' }}>
+                    {issuedCredential ? (
+                      <span className="glow-text-emerald">✓ Credential Loaded (Country: {issuedCredential.countryCode})</span>
+                    ) : (
+                      <span className="glow-text-rose">✗ No Credential found (Go to Issuer tab first)</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }} className="button-group-responsive">
                 <button 
                   className="btn btn-secondary" 
                   style={{ flex: 1 }} 
                   onClick={handleGenerateProof}
-                  disabled={isProving || !issuedCredential}
+                  disabled={isProving || (!isTestnetMode && !issuedCredential)}
                 >
-                  {isProving ? '⚙️ Proving...' : '🧮 Generate ZK Proof'}
+                  {isProving ? '⚙️ Proving...' : isTestnetMode ? '🧮 Offline CLI Prover Mode' : '🧮 Generate ZK Proof'}
                 </button>
 
                 <button 
                   className="btn btn-success" 
                   style={{ flex: 1 }} 
                   onClick={handleSubmitProof}
-                  disabled={!generatedProof}
+                  disabled={!generatedProof || testnetLoading}
                 >
                   🚀 Register Wallet
                 </button>
@@ -671,7 +989,7 @@ export default function App() {
                   <div className="flex-between" style={{ marginTop: '8px' }}>
                     <span className="form-label">Prover Status</span>
                     <span className="glow-text-emerald" style={{ fontSize: '12px', fontWeight: 'bold' }}>
-                      ✓ Proof Generated
+                      ✓ Proof Loaded
                     </span>
                   </div>
                 </div>
@@ -734,7 +1052,7 @@ export default function App() {
                 the `ComplianceShield` registry before allowing any mint or transfer actions.
               </p>
 
-              <div className="form-group" style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }} className="button-group-responsive">
                 <div style={{ flex: 1 }}>
                   <label className="form-label">Check Wallet Eligibility</label>
                   <input 
@@ -745,11 +1063,11 @@ export default function App() {
                     onChange={(e) => setWalletCheckAddr(e.target.value)}
                   />
                 </div>
-                <button className="btn btn-secondary" onClick={handleCheckEligibility}>Check</button>
+                <button className="btn btn-secondary" onClick={handleCheckEligibility} disabled={testnetLoading}>Check</button>
               </div>
 
               {checkResult && (
-                <div style={{ marginBottom: '16px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(0,0,0,0.15)', border: '1px solid var(--border-glass)' }}>
+                <div style={{ marginTop: '16px', marginBottom: '16px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(0,0,0,0.15)', border: '1px solid var(--border-glass)' }}>
                   <span style={{ fontSize: '13px', display: 'block', wordBreak: 'break-all' }}>
                     Wallet: <span style={{ fontFamily: 'var(--font-mono)' }}>{checkResult.address}</span>
                   </span>
@@ -759,7 +1077,7 @@ export default function App() {
                 </div>
               )}
 
-              <div className="form-group">
+              <div className="form-group mt-4">
                 <label className="form-label">Token Transfer Amount</label>
                 <input 
                   type="number" 
@@ -780,11 +1098,11 @@ export default function App() {
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleMintTokens}>
-                  🪙 Mint Assets (Admin Only)
+              <div style={{ display: 'flex', gap: '12px' }} className="button-group-responsive">
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleMintTokens} disabled={testnetLoading}>
+                  🪙 Mint Assets
                 </button>
-                <button className="btn btn-success" style={{ flex: 1 }} onClick={handleTransferTokens}>
+                <button className="btn btn-success" style={{ flex: 1 }} onClick={handleTransferTokens} disabled={testnetLoading}>
                   💸 Send Tokens
                 </button>
               </div>
@@ -793,79 +1111,12 @@ export default function App() {
                 <span className="form-label">Your Wallet Balance</span>
                 <div className="flex-between">
                   <span style={{ fontSize: '24px', fontWeight: '800' }}>
-                    {tokenState.initialized ? vm.balanceOf(userWalletAddress) : 0} {tokenState.symbol || 'RWA'}
+                    {isTestnetMode ? onchainBalance : (tokenState.initialized ? vm.balanceOf(userWalletAddress) : 0)} {isTestnetMode ? 'RWA' : (tokenState.symbol || 'RWA')}
                   </span>
                   <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                    {userWalletAddress.substring(0, 8)}...
+                    {isTestnetMode ? (freighterAddress ? `${freighterAddress.substring(0, 8)}...` : 'Not Connected') : `${userWalletAddress.substring(0, 8)}...`}
                   </span>
                 </div>
-              </div>
-
-              {/* Live Testnet Bridge Component */}
-              <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid var(--border-glass)' }}>
-                <h4 style={{ fontSize: '14px', fontWeight: '700', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>🌐</span> Live Stellar Testnet Bridge
-                </h4>
-                <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginBottom: '16px' }}>
-                  Query real deployed contracts directly on the Stellar Testnet blockchain. 
-                </p>
-
-                <div className="form-group">
-                  <label className="form-label">ComplianceShield Contract ID (Testnet)</label>
-                  <input 
-                    type="text" 
-                    className="form-input form-input-mono" 
-                    placeholder="CC..." 
-                    value={testnetContractId}
-                    onChange={(e) => setTestnetContractId(e.target.value)}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Query Wallet Address</label>
-                  <input 
-                    type="text" 
-                    className="form-input form-input-mono" 
-                    placeholder="G..." 
-                    value={testnetWalletAddress}
-                    onChange={(e) => setTestnetWalletAddress(e.target.value)}
-                  />
-                </div>
-
-                <button 
-                  className="btn btn-primary" 
-                  style={{ width: '100%' }} 
-                  onClick={handleQueryTestnet}
-                  disabled={testnetLoading}
-                >
-                  {testnetLoading ? '📡 Querying Testnet RPC...' : '🔍 Query Blockchain State'}
-                </button>
-
-                {testnetResult && (
-                  <div style={{ marginTop: '16px', padding: '12px', borderRadius: '8px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-glass)' }}>
-                    {testnetResult.success ? (
-                      <div>
-                        <div className="flex-between">
-                          <span className="form-label" style={{ margin: 0 }}>RPC Latency</span>
-                          <span style={{ fontSize: '11px', color: 'var(--neon-cyan)', fontFamily: 'var(--font-mono)' }}>{testnetResult.latency} ms</span>
-                        </div>
-                        <div style={{ marginTop: '8px' }}>
-                          <span style={{ fontSize: '13px', display: 'block', color: 'var(--color-text-secondary)' }}>Blockchain Status:</span>
-                          <span style={{ fontSize: '15px', fontWeight: 'bold', display: 'block', marginTop: '4px' }} className={testnetResult.eligible ? "glow-text-emerald" : "glow-text-rose"}>
-                            {testnetResult.eligible ? '🟢 ELIGIBLE (Wallet registered)' : '🔴 NON-COMPLIANT (Not registered)'}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <span className="glow-text-rose" style={{ fontSize: '13px', fontWeight: 'bold', display: 'block' }}>Query Failed</span>
-                        <p style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginTop: '4px', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
-                          {typeof testnetResult.error === 'object' ? JSON.stringify(testnetResult.error) : testnetResult.error}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -883,7 +1134,7 @@ export default function App() {
                 <span className="terminal-dot yellow"></span>
                 <span className="terminal-dot green"></span>
               </div>
-              <div>noir_client_prover_stream</div>
+              <div>narthex_onchain_prover_stream</div>
             </div>
             <div className="terminal-body">
               {terminalLines.map((line, idx) => (
@@ -910,7 +1161,7 @@ export default function App() {
                       {log.contract}
                     </span>
                     <span className="ledger-action">{log.action}</span>
-                    <span className="ledger-details">{log.details}</span>
+                    <span className="ledger-details" style={{ fontSize: '10px', wordBreak: 'break-all' }}>{log.details}</span>
                   </div>
                   <div className="ledger-status">
                     <span className={`status-badge ${log.status}`}>

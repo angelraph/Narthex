@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol, IntoVal};
 
 #[derive(Clone)]
 #[contracttype]
@@ -37,7 +37,7 @@ impl RwaToken {
         let is_eligible: bool = env.invoke_contract(
             registry,
             &Symbol::new(env, "is_wallet_eligible"),
-            soroban_sdk::vec![env, wallet.clone()],
+            soroban_sdk::vec![env, wallet.clone().into_val(env)],
         );
         if !is_eligible {
             panic!("Wallet is not eligible under ZK-SEP-57 Compliance Shield");
