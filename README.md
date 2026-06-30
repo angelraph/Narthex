@@ -9,6 +9,51 @@
 
 ---
 
+## 🌐 Deployed Testnet Contract IDs
+The smart contracts are actively deployed and initialized on the **Stellar Testnet**:
+*   **ComplianceShield**: `CCBTBY3KSROXEW7JUIULDOFYSF24OUNK3DM2Y5OCQXTE72OU2H77B76H`
+*   **RwaToken**: `CB7VZTPWLEIWSVEEVBYJDN66IXDPTNROU5CH4XI4MXC3GFWTM7JDRGKF`
+
+---
+
+## 🏗️ Narthex Core Architecture
+The following flow illustrates how Narthex integrates privacy-preserving compliance into Stellar RWA transactions:
+
+```
+Freighter Wallet
+        │
+        ▼
+Generate Noir Proof
+        │
+        ▼
+ComplianceShield (Verify ZK Proof)
+        │
+        ▼
+Eligible(wallet) = true
+        │
+        ▼
+RwaToken
+  ├─ Mint
+  └─ Transfer
+       │
+       ▼
+Checks ComplianceShield before execution
+```
+
+### Technical Stack & Flow Details
+*   **Noir Lang & UltraHonk**: The zero-knowledge circuits are written in **Noir Lang**, compiling to **UltraHonk** proofs.
+*   **Freighter Wallet**: Used to establish user wallet identities and sign transaction payloads. Proving ownership of the target wallet is verified inside the ZK circuit using the user's signature.
+*   **Soroban Smart Contracts**: Written in Rust, running natively on Stellar Testnet. 
+    - The `ComplianceShield` contract verifies the UltraHonk proof using Stellar's native Protocol 25/26 BN254 host functions.
+    - The `RwaToken` contract enforces dynamic compliance checks on all transfer operations by invoking the `ComplianceShield` registry contract on-chain.
+*   **End-to-End ZK Verification Flow**:
+    - **Issuer**: Signs user metadata (e.g. country, accreditation) off-chain.
+    - **Prover**: User generates an UltraHonk proof client-side verifying they possess a valid issuer signature and their country code is not in the banned country list.
+    - **Verifier**: The `ComplianceShield` contract verifies the proof, updates `Eligible(wallet) = true`, and registers a unique nullifier to prevent double registration.
+    - **Token Dynamic Check**: When user calls `transfer(from, to)`, `RwaToken` dynamically checks both addresses on the `ComplianceShield` contract before executing the asset transfer.
+
+---
+
 ## 📖 The Problem & The ZK Solution
 
 ### The Friction
