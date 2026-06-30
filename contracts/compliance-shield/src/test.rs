@@ -29,8 +29,14 @@ fn test_compliance_flow() {
     let contract_id = env.register_contract(None, ComplianceShield);
     let client = ComplianceShieldClient::new(&env, &contract_id);
 
+    // Verify initially is_initialized is false
+    assert!(!client.is_initialized());
+
     // Initialize
     client.initialize(&admin, &issuer_pub_key, &vk, &banned_countries);
+
+    // Verify post-initialize is_initialized is true
+    assert!(client.is_initialized());
 
     // Verify initial eligibility state (false)
     assert!(!client.is_wallet_eligible(&wallet));
@@ -52,7 +58,7 @@ fn test_already_initialized() {
     let issuer_pub_key = Bytes::from_slice(&env, &[0u8; 64]);
     
     let mut vk_mock = [0u8; 1760];
-    vk_mock[7] = 1024u8.to_be_bytes()[0]; // dummy setup
+    vk_mock[7] = 1024u16.to_be_bytes()[0]; // dummy setup
     let vk = Bytes::from_slice(&env, &vk_mock);
     let banned_countries = Vec::from_array(&env, [1, 2, 3, 4, 5]);
 

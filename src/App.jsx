@@ -22,9 +22,10 @@ export default function App() {
   const [isTestnetMode, setIsTestnetMode] = useState(false);
   const [freighterConnected, setFreighterConnected] = useState(false);
   const [freighterAddress, setFreighterAddress] = useState('');
-  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCRNB3Z7DGM3OBY6BHP5W3XXKQGSBJ3ENDJRYSKZFQUV4F4EPHDDSGQ7');
+  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCP3ZCQERWKUCD6KLOUX4K6DMERDZMJUHL2KN3LURJLWDHX4HKFQCGAC');
   const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CBOSM4KLCL4P2EKJ4FYLA5JXPBUGQWTFEFT7JSRONIGU45AE3KURLLGR');
   const [testnetLoading, setTestnetLoading] = useState(false);
+  const [shieldNeedsInit, setShieldNeedsInit] = useState(false);
   const [onchainBalance, setOnchainBalance] = useState('0');
 
   // Manual sign / sandbox fallback states
@@ -547,6 +548,85 @@ export default function App() {
     addTerminalLine('success', 'Ready to submit proof to ComplianceShield contract.');
   };
 
+  // Read-only check: is the contract initialized?
+  const checkIsContractInitialized = async (contractId) => {
+    try {
+      const server = new rpc.Server('https://soroban-testnet.stellar.org');
+      const contract = new Contract(contractId.trim());
+      const tempKeypair = Keypair.random();
+      const account = new Account(tempKeypair.publicKey(), '0');
+
+      const tx = new TransactionBuilder(account, {
+        fee: '100',
+        networkPassphrase: Networks.TESTNET
+      })
+      .addOperation(
+        contract.call('is_initialized')
+      )
+      .setTimeout(30)
+      .build();
+
+      const simResponse = await server.simulateTransaction(tx);
+      if (simResponse.result && simResponse.result.retval) {
+        return scValToNative(simResponse.result.retval);
+      }
+      return false;
+    } catch (e) {
+      console.warn("Failed to check is_initialized, assuming false:", e);
+      return false;
+    }
+  };
+
+  // Initialize ComplianceShield Contract on-chain
+  const handleInitializeComplianceShield = async () => {
+    if (!isTestnetMode || !testnetShieldContractId) return;
+
+    try {
+      setTestnetLoading(true);
+      addTerminalLine('info', 'Preparing initialize transaction on-chain...');
+
+      const installed = await isWalletInstalled();
+      let activeWallet = '';
+      if (isManualWalletMode) {
+        activeWallet = manualAddressInput;
+      } else {
+        activeWallet = freighterAddress || await getWalletAddress();
+      }
+
+      if (!activeWallet) {
+        throw new Error("No connected wallet to set as admin.");
+      }
+
+      // Mock UltraHonk VK fallback (1760 bytes)
+      const vkMockBytes = '0x' + 'ff'.repeat(1760);
+      
+      const iPubX = issuerKeypair.getPublic().getX().toArrayLike(Buffer, 'be', 32);
+      const iPubY = issuerKeypair.getPublic().getY().toArrayLike(Buffer, 'be', 32);
+      const issuerPubBytes = Buffer.concat([iPubX, iPubY]);
+
+      const scArgs = [
+        nativeToScVal(new Address(activeWallet.trim())), // admin
+        nativeToScVal(issuerPubBytes), // issuer_pubkey
+        nativeToScVal(Buffer.from(vkMockBytes.replace('0x', ''), 'hex')), // vk
+        nativeToScVal(bannedList.map(n => nativeToScVal(n, { type: 'u32' }))) // banned_countries
+      ];
+
+      const txRes = await executeSorobanTransaction(testnetShieldContractId, 'initialize', scArgs);
+      addTerminalLine('success', `Initialized ComplianceShield on-chain! Explorer: https://stellar.expert/explorer/testnet/tx/${txRes.hash}`);
+      vm.addLog('ComplianceShield', 'initialize()', 'success', `On-Chain Tx: ${txRes.hash.substring(0,8)}...`);
+      
+      setShieldNeedsInit(false);
+      addTerminalLine('info', 'Verification registry initialized. Proceeding to register wallet...');
+      
+      // Auto-continue to handleSubmitProof
+      await handleSubmitProof();
+    } catch (err) {
+      addTerminalLine('error', `Contract initialization failed: ${err.message}`);
+    } finally {
+      setTestnetLoading(false);
+    }
+  };
+
   // Submit Proof to Soroban ComplianceShield contract
   const handleSubmitProof = async () => {
     if (!generatedProof) return;
@@ -558,6 +638,16 @@ export default function App() {
           return;
         }
         setTestnetLoading(true);
+
+        // Check if contract is initialized
+        const isInit = await checkIsContractInitialized(testnetShieldContractId);
+        if (!isInit) {
+          addTerminalLine('error', 'Contract not initialized.');
+          setShieldNeedsInit(true);
+          setTestnetLoading(false);
+          return;
+        }
+
         addTerminalLine('info', 'Preparing register_wallet invocation on-chain...');
 
         const proofBuffer = Buffer.from(generatedProof.proof.replace('0x', ''), 'hex');
@@ -846,14 +936,23 @@ export default function App() {
           <span className="form-label">Compliance Shield Registry</span>
           {isTestnetMode ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <input 
-                type="text" 
-                placeholder="Paste contract ID..." 
-                className="form-input form-input-mono"
-                style={{ padding: '4px 8px', fontSize: '11px' }}
-                value={testnetShieldContractId}
-                onChange={(e) => updateShieldContractId(e.target.value)}
-              />
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input 
+                  type="text" 
+                  placeholder="Paste contract ID..." 
+                  className="form-input form-input-mono"
+                  style={{ padding: '4px 8px', fontSize: '11px', flex: 1 }}
+                  value={testnetShieldContractId}
+                  onChange={(e) => updateShieldContractId(e.target.value)}
+                />
+                <button 
+                  onClick={() => updateShieldContractId('CCP3ZCQERWKUCD6KLOUX4K6DMERDZMJUHL2KN3LURJLWDHX4HKFQCGAC')}
+                  className="btn-secondary"
+                  style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-glass)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  Reset
+                </button>
+              </div>
               <span style={{ fontSize: '11px' }} className={testnetShieldContractId ? "glow-text-cyan" : "glow-text-rose"}>
                 {testnetShieldContractId ? '🌐 ON-CHAIN CONTRACT' : '🔴 ID REQUIRED'}
               </span>
@@ -1087,6 +1186,22 @@ export default function App() {
                       <span className="glow-text-rose">✗ No Credential found (Go to Issuer tab first)</span>
                     )}
                   </div>
+                </div>
+              )}
+
+              {shieldNeedsInit && (
+                <div style={{ marginTop: '20px', padding: '16px', background: 'rgba(244,63,94,0.1)', borderRadius: '8px', border: '1px solid rgba(244,63,94,0.3)', marginBottom: '20px' }}>
+                  <p style={{ color: 'var(--neon-rose)', fontSize: '13px', marginBottom: '12px', fontWeight: 600 }}>
+                    ⚠️ ComplianceShield contract is not initialized on-chain.
+                  </p>
+                  <button 
+                    className="btn btn-success" 
+                    style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
+                    onClick={handleInitializeComplianceShield}
+                    disabled={testnetLoading}
+                  >
+                    ⚙️ Initialize Contract (Set current wallet as admin)
+                  </button>
                 </div>
               )}
 

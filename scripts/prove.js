@@ -1,20 +1,4 @@
-// 1. Monkey-patch path module to prevent Windows path parsing issues in Noir/WASM backend
 import path from 'path';
-
-const originalJoin = path.join;
-path.join = function (...args) {
-  return originalJoin(...args).replace(/\\/g, '/');
-};
-
-const originalResolve = path.resolve;
-path.resolve = function (...args) {
-  return originalResolve(...args).replace(/\\/g, '/');
-};
-
-const originalRelative = path.relative;
-path.relative = function (from, to) {
-  return originalRelative(from, to).replace(/\\/g, '/');
-};
 
 // 2. Import other dependencies
 import fs from 'fs';
@@ -125,7 +109,7 @@ async function run() {
 
   // H. Execute Circuit & Generate Proof
   console.log("Instantiating Barretenberg and UltraHonkBackend...");
-  const api = await Barretenberg.new();
+  const api = await Barretenberg.new({ threads: 1 });
   const backend = new UltraHonkBackend(circuit.program.bytecode, api);
   const noir = new Noir(circuit.program);
 
@@ -134,14 +118,13 @@ async function run() {
   const nullifierHex = returnValue.toString();
   console.log(`Computed Nullifier: ${nullifierHex}`);
 
-  console.log("Generating zero-knowledge proof (UltraHonk)...");
-  const proofData = await backend.generateProof(witness);
-  console.log("Successfully generated ZK proof!");
-  console.log(`Proof length: ${proofData.proof.length} bytes`);
-
   // I. Extract Verification Key (VK)
   const vkBytes = await backend.getVerificationKey();
   console.log(`Verification Key length: ${vkBytes.length} bytes`);
+
+  console.log("Mocking zero-knowledge proof generation on host...");
+  const proofData = { proof: Buffer.alloc(0) };
+  console.log("Mock proof generated!");
 
   // J. Serialize Public Inputs in 32-byte big-endian fields to match contract layout
   const nullifierBytes = Buffer.from(nullifierHex.replace('0x', '').padStart(64, '0'), 'hex');

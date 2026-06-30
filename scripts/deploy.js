@@ -1,8 +1,12 @@
-import { Keypair, Operation, TransactionBuilder, Networks, rpc, Address, xdr, scValToNative } from 'stellar-sdk';
+import { Keypair, Operation, TransactionBuilder, Networks, rpc, Address, xdr, scValToNative, nativeToScVal } from 'stellar-sdk';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import crypto from 'crypto';
+import pkg from 'elliptic';
+
+const { ec: EC } = pkg;
+const ec = new EC('secp256k1');
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -17,6 +21,21 @@ const server = new rpc.Server(RPC_URL);
 // Load Secret Key from environment
 const SECRET_KEY = process.env.STELLAR_SECRET_KEY || '';
 
+async function getAccountWithRetry(publicKey, maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const account = await server.getAccount(publicKey);
+      return account;
+    } catch (e) {
+      if (attempt === maxAttempts) {
+        throw e;
+      }
+      console.warn(`getAccount failed (attempt ${attempt}/${maxAttempts}): ${e.message}. Retrying in 2s...`);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+
 async function deployWasm(sourceKeypair, wasmPath) {
   console.log(`Reading WASM bytecode from ${wasmPath}...`);
   if (!fs.existsSync(wasmPath)) {
@@ -25,97 +44,92 @@ async function deployWasm(sourceKeypair, wasmPath) {
   const wasm = fs.readFileSync(wasmPath);
   const localWasmHash = crypto.createHash('sha256').update(wasm).digest();
 
-  // Check if WASM already exists on-chain
-  const exists = await checkWasmExists(localWasmHash);
-  if (exists) {
-    console.log(`WASM already exists on-chain! Skipping upload. Hash: ${localWasmHash.toString('hex')}\n`);
-    return localWasmHash;
+  // Always upload WASM to ensure it is active and has fresh TTL on testnet
+
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      console.log(`Preparing transaction to upload WASM bytecode (attempt ${attempt}/5)...`);
+      const account = await getAccountWithRetry(sourceKeypair.publicKey());
+      const prevSeq = account.sequenceNumber();
+      
+      let tx = new TransactionBuilder(account, {
+        fee: '5000000',
+        networkPassphrase: Networks.TESTNET
+      })
+        .addOperation(Operation.uploadContractWasm({ wasm }))
+        .setTimeout(60)
+        .build();
+
+      console.log("Simulating transaction footprint...");
+      tx = await server.prepareTransaction(tx);
+      
+      tx.sign(sourceKeypair);
+      console.log("Submitting transaction to Stellar network...");
+      let response = await server.sendTransaction(tx);
+
+      if (response.status === 'ERROR') {
+        throw new Error(`Upload transaction failed: ${JSON.stringify(response.errorResult)}`);
+      }
+
+      console.log("Waiting for block consensus...");
+      await pollTxStatus(response.hash);
+      
+      await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
+      console.log(`WASM successfully uploaded! Hash: ${localWasmHash.toString('hex')}\n`);
+      return localWasmHash;
+    } catch (e) {
+      console.warn(`deployWasm attempt ${attempt}/5 failed: ${e.message}. Retrying in 5s...`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
   }
-
-  console.log("Preparing transaction to upload WASM bytecode...");
-  const account = await server.getAccount(sourceKeypair.publicKey());
-  const prevSeq = account.sequenceNumber();
-  
-  let tx = new TransactionBuilder(account, {
-    fee: '5000000',
-    networkPassphrase: Networks.TESTNET
-  })
-    .addOperation(Operation.uploadContractWasm({ wasm }))
-    .setTimeout(60)
-    .build();
-
-  console.log("Simulating transaction footprint...");
-  tx = await server.prepareTransaction(tx);
-  
-  tx.sign(sourceKeypair);
-  console.log("Submitting transaction to Stellar network...");
-  let response = await server.sendTransaction(tx);
-
-  if (response.status === 'ERROR') {
-    throw new Error(`Upload transaction failed: ${JSON.stringify(response.errorResult)}`);
-  }
-
-  console.log("Waiting for block consensus...");
-  await pollTxStatus(response.hash);
-  
-  await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
-  console.log(`WASM successfully uploaded! Hash: ${localWasmHash.toString('hex')}\n`);
-  return localWasmHash;
+  throw new Error("Failed to upload WASM after 5 attempts.");
 }
 
 async function instantiateContract(sourceKeypair, wasmHash) {
   console.log(`Instantiating contract for WASM hash ${wasmHash}...`);
-  const account = await server.getAccount(sourceKeypair.publicKey());
-  const prevSeq = account.sequenceNumber();
   
-  let tx = new TransactionBuilder(account, {
-    fee: '5000000',
-    networkPassphrase: Networks.TESTNET
-  })
-    .addOperation(Operation.createCustomContract({
-      wasmHash,
-      address: new Address(sourceKeypair.publicKey())
-    }))
-    .setTimeout(60)
-    .build();
-
-  console.log("Simulating transaction footprint...");
-  let preparedTx = null;
-  for (let attempt = 1; attempt <= 10; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      preparedTx = await server.prepareTransaction(tx);
-      break;
-    } catch (e) {
-      const errMsg = e.message || '';
-      if (errMsg.includes('MissingValue') || errMsg.includes('Wasm does not exist') || errMsg.includes('HostError')) {
-        console.warn(`Simulation failed: WASM not indexed yet (attempt ${attempt}/10). Retrying in 3s...`);
-        await new Promise(r => setTimeout(r, 3000));
-      } else {
-        throw e;
+      const account = await getAccountWithRetry(sourceKeypair.publicKey());
+      const prevSeq = account.sequenceNumber();
+      
+      let tx = new TransactionBuilder(account, {
+        fee: '5000000',
+        networkPassphrase: Networks.TESTNET
+      })
+        .addOperation(Operation.createCustomContract({
+          wasmHash,
+          address: new Address(sourceKeypair.publicKey())
+        }))
+        .setTimeout(60)
+        .build();
+
+      console.log(`Simulating transaction footprint (attempt ${attempt}/5)...`);
+      tx = await server.prepareTransaction(tx);
+      tx.sign(sourceKeypair);
+      
+      console.log("Submitting instantiation transaction...");
+      let response = await server.sendTransaction(tx);
+      if (response.status === 'ERROR') {
+        throw new Error(`Instantiation transaction failed: ${JSON.stringify(response.errorResult)}`);
       }
+      let txStatus = await pollTxStatus(response.hash);
+      
+      // Parse resultXdr manually to extract the Contract ID
+      const txResult = xdr.TransactionResult.fromXDR(txStatus.resultXdr, 'base64');
+      const opResult = txResult.result().results()[0];
+      const contractIdBuffer = opResult.tr().invokeHostFunctionResult().success();
+      const contractId = Address.fromScAddress(xdr.ScAddress.scAddressTypeContract(contractIdBuffer)).toString();
+      
+      await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
+      console.log(`Contract successfully deployed! ID: ${contractId}\n`);
+      return contractId;
+    } catch (e) {
+      console.warn(`instantiateContract attempt ${attempt}/5 failed: ${e.message}. Retrying in 5s...`);
+      await new Promise(r => setTimeout(r, 5000));
     }
   }
-  if (!preparedTx) {
-    throw new Error("Transaction simulation timed out waiting for WASM indexing.");
-  }
-  tx = preparedTx;
-  tx.sign(sourceKeypair);
-  
-  let response = await server.sendTransaction(tx);
-  if (response.status === 'ERROR') {
-    throw new Error(`Instantiation transaction failed: ${JSON.stringify(response.errorResult)}`);
-  }
-  let txStatus = await pollTxStatus(response.hash);
-  
-  // Parse resultXdr manually to extract the Contract ID
-  const txResult = xdr.TransactionResult.fromXDR(txStatus.resultXdr, 'base64');
-  const opResult = txResult.result().results()[0];
-  const contractIdBuffer = opResult.tr().invokeHostFunctionResult().success();
-  const contractId = Address.fromScAddress(xdr.ScAddress.scAddressTypeContract(contractIdBuffer)).toString();
-  
-  await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
-  console.log(`Contract successfully deployed! ID: ${contractId}\n`);
-  return contractId;
+  throw new Error("Failed to instantiate contract after 5 attempts.");
 }
 
 async function waitForSequenceIncrement(publicKey, prevSeqString) {
@@ -188,6 +202,33 @@ async function pollTxStatus(hash) {
   throw new Error("Transaction polling timed out");
 }
 
+async function checkIsInitialized(sourceKeypair, contractId) {
+  try {
+    const account = await getAccountWithRetry(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(account, {
+      fee: '100000',
+      networkPassphrase: Networks.TESTNET
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: contractId,
+        function: 'is_initialized',
+        args: []
+      }))
+      .setTimeout(30)
+      .build();
+
+    const sim = await server.simulateTransaction(tx);
+    if (sim.error) {
+      console.warn("Simulation failed (possibly not initialized):", sim.error);
+      return false;
+    }
+    return scValToNative(sim.results[0].retval);
+  } catch (e) {
+    console.warn("Failed to check is_initialized, assuming false:", e.message);
+    return false;
+  }
+}
+
 async function run() {
   try {
     let sourceKeypair;
@@ -222,8 +263,8 @@ async function run() {
         console.log("=================================================\n");
         await waitEnter("Once funded, press [Enter] to continue contract deployment...");
       } else {
-        console.log("Account successfully funded! Waiting 10 seconds for ledger consolidation...");
-        await new Promise(r => setTimeout(r, 10000));
+        console.log("Account successfully funded! Waiting 30 seconds for ledger consolidation...");
+        await new Promise(r => setTimeout(r, 30000));
       }
     } else {
       sourceKeypair = Keypair.fromSecret(SECRET_KEY);
@@ -255,6 +296,82 @@ async function run() {
     await new Promise(r => setTimeout(r, 6000));
     const shieldContractId = await instantiateContract(sourceKeypair, shieldWasmHash);
 
+    // Check initialization status of ComplianceShield
+    let isShieldInit = await checkIsInitialized(sourceKeypair, shieldContractId);
+    console.log(`ComplianceShield initial state is_initialized(): ${isShieldInit}`);
+
+    if (!isShieldInit) {
+      console.log("Initializing ComplianceShield contract...");
+      
+      let shieldInitialized = false;
+      for (let attempt = 1; attempt <= 10; attempt++) {
+        try {
+          const account = await getAccountWithRetry(sourceKeypair.publicKey());
+          const prevSeq = account.sequenceNumber();
+          
+          const iKey = ec.genKeyPair();
+          const iPubX = iKey.getPublic().getX().toArrayLike(Buffer, 'be', 32);
+          const iPubY = iKey.getPublic().getY().toArrayLike(Buffer, 'be', 32);
+          const issuerPubKeyBuffer = Buffer.concat([iPubX, iPubY]);
+          
+          let vkBuffer;
+          const vkPath = path.resolve('circuits/target/verification_key.bin');
+          if (fs.existsSync(vkPath)) {
+            console.log("Found ZK verification key file, using it...");
+            vkBuffer = fs.readFileSync(vkPath);
+          } else {
+            console.log("No ZK verification key file found. Using mock verification key...");
+            vkBuffer = Buffer.alloc(1760, 0xff);
+          }
+          
+          const bannedCountries = [1, 2, 3, 4, 5];
+          
+          const scArgs = [
+            new Address(sourceKeypair.publicKey()).toScVal(), // admin
+            xdr.ScVal.scvBytes(issuerPubKeyBuffer), // issuer_pubkey
+            xdr.ScVal.scvBytes(vkBuffer), // vk
+            xdr.ScVal.scvVec(bannedCountries.map(c => xdr.ScVal.scvU32(c))) // banned_countries
+          ];
+
+          let tx = new TransactionBuilder(account, {
+            fee: '5000000',
+            networkPassphrase: Networks.TESTNET
+          })
+            .addOperation(Operation.invokeContractFunction({
+              contract: shieldContractId,
+              function: 'initialize',
+              args: scArgs
+            }))
+            .setTimeout(60)
+            .build();
+
+          console.log(`Simulating initialization transaction (attempt ${attempt}/10)...`);
+          tx = await server.prepareTransaction(tx);
+          tx.sign(sourceKeypair);
+          
+          console.log("Submitting initialization transaction...");
+          let response = await server.sendTransaction(tx);
+          if (response.status === 'ERROR') {
+            throw new Error(`Initialization transaction failed: ${JSON.stringify(response.errorResult)}`);
+          }
+          await pollTxStatus(response.hash);
+          await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
+          console.log("ComplianceShield contract successfully initialized!");
+          shieldInitialized = true;
+          break;
+        } catch (e) {
+          console.warn(`ComplianceShield initialize attempt ${attempt}/10 failed: ${e.message}. Retrying in 5s...`);
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      }
+      if (!shieldInitialized) {
+        throw new Error("Failed to initialize ComplianceShield contract after 10 attempts.");
+      }
+
+      isShieldInit = await checkIsInitialized(sourceKeypair, shieldContractId);
+      console.log(`ComplianceShield post-initialization state is_initialized(): ${isShieldInit}`);
+    }
+
     // 2. Deploy RwaToken
     const tokenWasmPath = path.resolve('contracts/target/wasm32v1-none/release/rwa_token.wasm');
     const tokenWasmHash = await deployWasm(sourceKeypair, tokenWasmPath);
@@ -262,8 +379,58 @@ async function run() {
     await new Promise(r => setTimeout(r, 6000));
     const tokenContractId = await instantiateContract(sourceKeypair, tokenWasmHash);
 
+    // Initialize RwaToken linking it to ComplianceShield
+    console.log("Initializing RwaToken contract...");
+    let tokenInitialized = false;
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        const tokenAccount = await getAccountWithRetry(sourceKeypair.publicKey());
+        const tokenPrevSeq = tokenAccount.sequenceNumber();
+
+        const tokenScArgs = [
+          new Address(sourceKeypair.publicKey()).toScVal(), // admin
+          new Address(shieldContractId).toScVal(), // compliance shield registry
+          nativeToScVal("Compliance Protected Realty Token"), // name
+          nativeToScVal("CPRT") // symbol
+        ];
+
+        let tokenTx = new TransactionBuilder(tokenAccount, {
+          fee: '5000000',
+          networkPassphrase: Networks.TESTNET
+        })
+          .addOperation(Operation.invokeContractFunction({
+            contract: tokenContractId,
+            function: 'initialize',
+            args: tokenScArgs
+          }))
+          .setTimeout(60)
+          .build();
+
+        console.log(`Simulating RwaToken initialization transaction (attempt ${attempt}/10)...`);
+        tokenTx = await server.prepareTransaction(tokenTx);
+        tokenTx.sign(sourceKeypair);
+
+        console.log("Submitting RwaToken initialization transaction...");
+        let tokenResponse = await server.sendTransaction(tokenTx);
+        if (tokenResponse.status === 'ERROR') {
+          throw new Error(`RwaToken initialization transaction failed: ${JSON.stringify(tokenResponse.errorResult)}`);
+        }
+        await pollTxStatus(tokenResponse.hash);
+        await waitForSequenceIncrement(sourceKeypair.publicKey(), tokenPrevSeq);
+        console.log("RwaToken contract successfully initialized!");
+        tokenInitialized = true;
+        break;
+      } catch (e) {
+        console.warn(`RwaToken initialize attempt ${attempt}/10 failed: ${e.message}. Retrying in 5s...`);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    if (!tokenInitialized) {
+      throw new Error("Failed to initialize RwaToken contract after 10 attempts.");
+    }
+
     console.log("=================================================");
-    console.log("DEPLOYMENT SUCCESSFUL!");
+    console.log("DEPLOYMENT & INITIALIZATION SUCCESSFUL!");
     console.log(`ComplianceShield ID: ${shieldContractId}`);
     console.log(`RwaToken ID:         ${tokenContractId}`);
     console.log("=================================================");
