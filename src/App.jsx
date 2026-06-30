@@ -23,7 +23,7 @@ export default function App() {
   const [freighterConnected, setFreighterConnected] = useState(false);
   const [freighterAddress, setFreighterAddress] = useState('');
   const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCP3ZCQERWKUCD6KLOUX4K6DMERDZMJUHL2KN3LURJLWDHX4HKFQCGAC');
-  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CBOSM4KLCL4P2EKJ4FYLA5JXPBUGQWTFEFT7JSRONIGU45AE3KURLLGR');
+  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CC7SAGHDN74IKUTUATC4TMA6NTE6EXFL223CLQLQK2IEGWW3JWLVHWJN');
   const [testnetLoading, setTestnetLoading] = useState(false);
   const [shieldNeedsInit, setShieldNeedsInit] = useState(false);
   const [onchainBalance, setOnchainBalance] = useState('0');
@@ -967,14 +967,23 @@ export default function App() {
           <span className="form-label">RWA Protected Token</span>
           {isTestnetMode ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <input 
-                type="text" 
-                placeholder="Paste contract ID..." 
-                className="form-input form-input-mono"
-                style={{ padding: '4px 8px', fontSize: '11px' }}
-                value={testnetTokenContractId}
-                onChange={(e) => updateTokenContractId(e.target.value)}
-              />
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input 
+                  type="text" 
+                  placeholder="Paste contract ID..." 
+                  className="form-input form-input-mono"
+                  style={{ padding: '4px 8px', fontSize: '11px', flex: 1 }}
+                  value={testnetTokenContractId}
+                  onChange={(e) => updateTokenContractId(e.target.value)}
+                />
+                <button 
+                  onClick={() => updateTokenContractId('CC7SAGHDN74IKUTUATC4TMA6NTE6EXFL223CLQLQK2IEGWW3JWLVHWJN')}
+                  className="btn-secondary"
+                  style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-glass)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  Reset
+                </button>
+              </div>
               <span style={{ fontSize: '11px' }} className={testnetTokenContractId ? "glow-text-cyan" : "glow-text-rose"}>
                 {testnetTokenContractId ? '🌐 ON-CHAIN TOKEN' : '🔴 ID REQUIRED'}
               </span>
