@@ -20,6 +20,7 @@ const server = new rpc.Server(RPC_URL);
 
 // Load Secret Key from environment
 const SECRET_KEY = process.env.STELLAR_SECRET_KEY || '';
+const ADMIN_ADDRESS = 'GDT56FG5TQIOVOINF65ZHV2YQQN7KG276TKM4UGOPO3PKEMCXLDFXEUE';
 
 async function getAccountWithRetry(publicKey, maxAttempts = 5) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -115,11 +116,29 @@ async function instantiateContract(sourceKeypair, wasmHash) {
       }
       let txStatus = await pollTxStatus(response.hash);
       
-      // Parse resultXdr manually to extract the Contract ID
-      const txResult = xdr.TransactionResult.fromXDR(txStatus.resultXdr, 'base64');
-      const opResult = txResult.result().results()[0];
-      const contractIdBuffer = opResult.tr().invokeHostFunctionResult().success();
-      const contractId = Address.fromScAddress(xdr.ScAddress.scAddressTypeContract(contractIdBuffer)).toString();
+      // Extract true contract ID from resultMetaXdr
+      let contractId = '';
+      const metaXdr = xdr.TransactionMeta.fromXDR(txStatus.resultMetaXdr, 'base64');
+      const v3 = metaXdr.v3();
+      const changes = v3.txChangesAfter();
+      for (const change of changes) {
+        let entry;
+        if (change.switch() === xdr.LedgerEntryChangeType.ledgerEntryCreated()) {
+          entry = change.created();
+        } else if (change.switch() === xdr.LedgerEntryChangeType.ledgerEntryUpdated()) {
+          entry = change.updated();
+        }
+        if (entry && entry.data().switch() === xdr.LedgerEntryType.contractData()) {
+          const cData = entry.data().contractData();
+          if (cData.key().switch() === xdr.ScValType.scvLedgerKeyContractInstance()) {
+            contractId = Address.fromScAddress(cData.contract()).toString();
+          }
+        }
+      }
+      
+      if (!contractId) {
+        throw new Error("Failed to extract contract ID from transaction metadata.");
+      }
       
       await waitForSequenceIncrement(sourceKeypair.publicKey(), prevSeq);
       console.log(`Contract successfully deployed! ID: ${contractId}\n`);
@@ -327,7 +346,7 @@ async function run() {
           const bannedCountries = [1, 2, 3, 4, 5];
           
           const scArgs = [
-            new Address(sourceKeypair.publicKey()).toScVal(), // admin
+            new Address(ADMIN_ADDRESS).toScVal(), // admin
             xdr.ScVal.scvBytes(issuerPubKeyBuffer), // issuer_pubkey
             xdr.ScVal.scvBytes(vkBuffer), // vk
             xdr.ScVal.scvVec(bannedCountries.map(c => xdr.ScVal.scvU32(c))) // banned_countries
@@ -388,7 +407,7 @@ async function run() {
         const tokenPrevSeq = tokenAccount.sequenceNumber();
 
         const tokenScArgs = [
-          new Address(sourceKeypair.publicKey()).toScVal(), // admin
+          new Address(ADMIN_ADDRESS).toScVal(), // admin
           new Address(shieldContractId).toScVal(), // compliance shield registry
           nativeToScVal("Compliance Protected Realty Token"), // name
           nativeToScVal("CPRT") // symbol

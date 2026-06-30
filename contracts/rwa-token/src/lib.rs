@@ -40,15 +40,17 @@ impl RwaToken {
             soroban_sdk::vec![env, wallet.clone().into_val(env)],
         );
         if !is_eligible {
-            panic!("Wallet is not eligible under ZK-SEP-57 Compliance Shield");
+            panic!("RwaToken: wallet is not eligible under ZK-SEP-57 Compliance Shield");
         }
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("RwaToken: admin key not initialized");
         admin.require_auth();
 
-        let registry: Address = env.storage().instance().get(&DataKey::Registry).unwrap();
+        let registry: Address = env.storage().instance().get(&DataKey::Registry)
+            .expect("RwaToken: registry key not initialized");
         Self::check_eligibility(&env, &registry, &to);
 
         let balance_key = DataKey::Balance(to.clone());
@@ -59,7 +61,8 @@ impl RwaToken {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
 
-        let registry: Address = env.storage().instance().get(&DataKey::Registry).unwrap();
+        let registry: Address = env.storage().instance().get(&DataKey::Registry)
+            .expect("RwaToken: registry key not initialized");
         Self::check_eligibility(&env, &registry, &from);
         Self::check_eligibility(&env, &registry, &to);
 
@@ -68,7 +71,7 @@ impl RwaToken {
 
         let from_balance = env.storage().persistent().get(&from_key).unwrap_or(0i128);
         if from_balance < amount {
-            panic!("Insufficient balance");
+            panic!("RwaToken: insufficient balance for transfer");
         }
 
         let to_balance = env.storage().persistent().get(&to_key).unwrap_or(0i128);
@@ -82,11 +85,13 @@ impl RwaToken {
     }
 
     pub fn name(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Name).unwrap()
+        env.storage().instance().get(&DataKey::Name)
+            .expect("RwaToken: name key not initialized")
     }
 
     pub fn symbol(env: Env) -> String {
-        env.storage().instance().get(&DataKey::Symbol).unwrap()
+        env.storage().instance().get(&DataKey::Symbol)
+            .expect("RwaToken: symbol key not initialized")
     }
 }
 

@@ -100,7 +100,8 @@ impl ComplianceShield {
         public_inputs.append(&Bytes::from_slice(&env, &wallet_hash));
         
         for i in 0..5 {
-            let country = banned_countries.get(i).unwrap();
+            let country = banned_countries.get(i)
+                .expect("ComplianceShield: banned countries length is less than 5");
             let mut country_bytes = [0u8; 32];
             let country_be = country.to_be_bytes();
             country_bytes[28] = country_be[0];

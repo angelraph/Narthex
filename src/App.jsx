@@ -1,13 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import pkg from 'elliptic';
 import blake from 'blakejs';
-import { Address, Keypair, Contract, rpc, scValToNative, nativeToScVal, Networks, TransactionBuilder, Account } from 'stellar-sdk';
+import { Address, Keypair, Contract, rpc, scValToNative, nativeToScVal, Networks, TransactionBuilder, Account, xdr } from 'stellar-sdk';
 import { MockSorobanVM } from './mockSoroban';
 import logoImg from './narthex_logo.png';
 import { connectWallet, getWalletAddress, signXdr, isWalletInstalled } from './wallet/freighter';
 
 const { ec: EC } = pkg;
 const ec = new EC('secp256k1');
+
+// Helper to convert JS Number/BigInt to ScVal i128 format strictly expected by Soroban
+const scvI128 = (value) => {
+  const big = BigInt(value);
+  const lo = big & 0xffffffffffffffffn;
+  const hi = big >> 64n;
+  return xdr.ScVal.scvI128(new xdr.Int128Parts({
+    lo: new xdr.Uint64([Number(lo & 0xffffffffn), Number(lo >> 32n)]),
+    hi: new xdr.Int64([Number(hi & 0xffffffffn), Number(hi >> 32n)])
+  }));
+};
 
 export default function App() {
   const [vm] = useState(() => new MockSorobanVM());
@@ -22,8 +33,8 @@ export default function App() {
   const [isTestnetMode, setIsTestnetMode] = useState(false);
   const [freighterConnected, setFreighterConnected] = useState(false);
   const [freighterAddress, setFreighterAddress] = useState('');
-  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCP3ZCQERWKUCD6KLOUX4K6DMERDZMJUHL2KN3LURJLWDHX4HKFQCGAC');
-  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CC7SAGHDN74IKUTUATC4TMA6NTE6EXFL223CLQLQK2IEGWW3JWLVHWJN');
+  const [testnetShieldContractId, setTestnetShieldContractId] = useState(() => localStorage.getItem('narthex_shield_id') || 'CCBTBY3KSROXEW7JUIULDOFYSF24OUNK3DM2Y5OCQXTE72OU2H77B76H');
+  const [testnetTokenContractId, setTestnetTokenContractId] = useState(() => localStorage.getItem('narthex_token_id') || 'CB7VZTPWLEIWSVEEVBYJDN66IXDPTNROU5CH4XI4MXC3GFWTM7JDRGKF');
   const [testnetLoading, setTestnetLoading] = useState(false);
   const [shieldNeedsInit, setShieldNeedsInit] = useState(false);
   const [onchainBalance, setOnchainBalance] = useState('0');
@@ -696,7 +707,7 @@ export default function App() {
 
         const scArgs = [
           nativeToScVal(new Address(userWalletAddress.trim())),
-          nativeToScVal(BigInt(rwaAmount))
+          scvI128(rwaAmount)
         ];
 
         const txRes = await executeSorobanTransaction(testnetTokenContractId, 'mint', scArgs);
@@ -733,7 +744,7 @@ export default function App() {
         const scArgs = [
           nativeToScVal(new Address(userWalletAddress.trim())),
           nativeToScVal(new Address(targetRecipient.trim())),
-          nativeToScVal(BigInt(rwaAmount))
+          scvI128(rwaAmount)
         ];
 
         const txRes = await executeSorobanTransaction(testnetTokenContractId, 'transfer', scArgs);
@@ -946,7 +957,7 @@ export default function App() {
                   onChange={(e) => updateShieldContractId(e.target.value)}
                 />
                 <button 
-                  onClick={() => updateShieldContractId('CCP3ZCQERWKUCD6KLOUX4K6DMERDZMJUHL2KN3LURJLWDHX4HKFQCGAC')}
+                  onClick={() => updateShieldContractId('CCBTBY3KSROXEW7JUIULDOFYSF24OUNK3DM2Y5OCQXTE72OU2H77B76H')}
                   className="btn-secondary"
                   style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-glass)', color: 'var(--text-muted)', cursor: 'pointer' }}
                 >
@@ -977,7 +988,7 @@ export default function App() {
                   onChange={(e) => updateTokenContractId(e.target.value)}
                 />
                 <button 
-                  onClick={() => updateTokenContractId('CC7SAGHDN74IKUTUATC4TMA6NTE6EXFL223CLQLQK2IEGWW3JWLVHWJN')}
+                  onClick={() => updateTokenContractId('CB7VZTPWLEIWSVEEVBYJDN66IXDPTNROU5CH4XI4MXC3GFWTM7JDRGKF')}
                   className="btn-secondary"
                   style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-glass)', color: 'var(--text-muted)', cursor: 'pointer' }}
                 >
